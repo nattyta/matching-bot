@@ -1,6 +1,6 @@
 import mysql.connector
 from telebot import TeleBot
-from constant import API_KEY  # Make sure to provide your actual API key
+from constant import API_KEY
 from telebot import types
 
 bot = TeleBot(API_KEY, parse_mode=None)
@@ -16,7 +16,6 @@ cursor = conn.cursor()
 
 user_data = {}
 
-
 # Welcome message and starting the profile setup
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -25,7 +24,6 @@ def send_welcome(message):
     msg = bot.reply_to(message, "Welcome! Please set up your profile.", reply_markup=markup)
     bot.register_next_step_handler(msg, ask_name)
 
-
 def ask_name(message):
     if message.text == 'Set Up Your Profile':
         chat_id = message.chat.id
@@ -33,13 +31,11 @@ def ask_name(message):
         msg = bot.reply_to(message, "Please enter your name:")
         bot.register_next_step_handler(msg, ask_age)
 
-
 def ask_age(message):
     chat_id = message.chat.id
     user_data[chat_id]['name'] = message.text
     msg = bot.reply_to(message, "Please enter your age:")
     bot.register_next_step_handler(msg, validate_age)
-
 
 def validate_age(message):
     chat_id = message.chat.id
@@ -52,12 +48,10 @@ def validate_age(message):
 
 def ask_gender(message):
     chat_id = message.chat.id
-    user_data[chat_id]['age'] = message.text
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     markup.add(types.KeyboardButton("M"), types.KeyboardButton("F"))
     msg = bot.reply_to(message, "Please enter your gender (M or F):", reply_markup=markup)
     bot.register_next_step_handler(msg, validate_gender)
-
 
 def validate_gender(message):
     chat_id = message.chat.id
@@ -74,16 +68,14 @@ def validate_gender(message):
         msg = bot.reply_to(message, "Invalid input. Please enter 'M' or 'F'.")
         bot.register_next_step_handler(msg, ask_gender)
 
-
 def handle_location_or_prompt_for_location(message):
     chat_id = message.chat.id
     if message.location:
         user_data[chat_id]['location'] = f"{message.location.latitude}, {message.location.longitude}"
     else:
         user_data[chat_id]['location'] = message.text
-    msg = bot.reply_to(message, "Almost done! Please send a profile picture:")
+    msg = bot.reply_to(message, "Almost done! Please send a photo of yourself:")
     bot.register_next_step_handler(msg, ask_photo)
-
 
 def ask_photo(message):
     chat_id = message.chat.id
@@ -94,7 +86,6 @@ def ask_photo(message):
     else:
         msg = bot.reply_to(message, "Please send a photo.")
         bot.register_next_step_handler(msg, ask_photo)
-
 
 def ask_interests(message):
     chat_id = message.chat.id
@@ -130,7 +121,6 @@ def ask_interests(message):
     # Print to console or use the data elsewhere
     print(f"User data for {chat_id}: {user_data[chat_id]}")
 
-
 @bot.message_handler(commands=['profile'])
 def show_stored_profile(message):
     chat_id = message.chat.id
@@ -147,7 +137,6 @@ def show_stored_profile(message):
     else:
         bot.reply_to(message, "No profile found. Please set up your profile using /start.")
 
-
 def get_user_info(chat_id):
     cursor.execute('SELECT * FROM users WHERE chat_id = %s', (chat_id,))
     result = cursor.fetchone()
@@ -163,9 +152,114 @@ def get_user_info(chat_id):
         }
         return user_info
     return None
+   
+##my_profile
+
+
+@bot.message_handler(commands=['my_profile'])
+def my_profile(message):
+    chat_id = message.chat.id
+    user_info = get_user_info(chat_id)
+    if user_info:
+        profile_summary = (
+            f"Name: {user_info['name']}\n"
+            f"Age: {user_info['age']}\n"
+            f"Gender: {user_info['gender']}\n"
+            f"Location: {user_info['location']}\n"
+            f"Interests: {user_info['interests']}"
+        ) 
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add('Edit Name', 'Edit Age', 'Edit Gender', 'Edit Location', 'Edit Interests')
+
+        # Send the profile picture along with the profile summary
+        bot.send_photo(chat_id, user_info['photo'], caption=f"Your stored profile:\n\n{profile_summary}", reply_markup=markup)
+        msg = bot.send_message(chat_id, "Choose what you want to edit:", reply_markup=markup)
+        bot.register_next_step_handler(msg, edit_profile)
+    else:
+        bot.reply_to(message, "No profile found. Please set up your profile using /start.")
+
+def edit_profile(message):
+    chat_id = message.chat.id
+    if message.text == 'Edit Name':
+        msg = bot.reply_to(message, "Please enter your new name:")
+        bot.register_next_step_handler(msg, update_name)
+    elif message.text == 'Edit Age':
+        msg = bot.reply_to(message, "Please enter your new age:")
+        bot.register_next_step_handler(msg, validate_and_update_age)
+    elif message.text == 'Edit Gender':
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add(types.KeyboardButton("M"), types.KeyboardButton("F"))
+        msg = bot.reply_to(message, "Please enter your new gender (M or F):", reply_markup=markup)
+        bot.register_next_step_handler(msg, validate_and_update_gender)
+    elif message.text == 'Edit Location':
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        location_button = types.KeyboardButton("Share Location", request_location=True)
+        markup.add(location_button)
+        msg = bot.reply_to(message, "Please share your new location or type it in:", reply_markup=markup)
+        bot.register_next_step_handler(msg, update_location)
+    elif message.text == 'Edit Interests':
+        msg = bot.reply_to(message, "Please enter your new interests (separate keywords with commas):")
+        bot.register_next_step_handler(msg, update_interests)
+    else:
+        bot.reply_to(message, "Invalid option")
+
+def update_name(message):
+    chat_id = message.chat.id
+    new_name = message.text
+    cursor.execute('UPDATE users SET name = %s WHERE chat_id = %s', (new_name, chat_id))
+    conn.commit()
+    bot.reply_to(message, f"Your name has been updated to {new_name}")
+
+def validate_and_update_age(message):
+    chat_id = message.chat.id
+    if message.text.isdigit():
+        new_age = message.text
+        cursor.execute('UPDATE users SET age = %s WHERE chat_id = %s', (new_age, chat_id))
+        conn.commit()
+        bot.reply_to(message, f"Your age has been updated to {new_age}")
+    else:
+        msg = bot.reply_to(message, "Invalid input. Please enter a valid number for your age:")
+        bot.register_next_step_handler(msg, validate_and_update_age)
+
+def validate_and_update_gender(message):
+    chat_id = message.chat.id
+    gender = message.text.upper()
+    if gender in ['M', 'F']:
+        cursor.execute('UPDATE users SET gender = %s WHERE chat_id = %s', (gender, chat_id))
+        conn.commit()
+        bot.reply_to(message, f"Your gender has been updated to {gender}")
+    else:
+        msg = bot.reply_to(message, "Invalid input. Please enter 'M' or 'F'.")
+        bot.register_next_step_handler(msg, validate_and_update_gender)
+
+def update_location(message):
+    chat_id = message.chat.id
+    if message.location:
+        new_location = f"{message.location.latitude}, {message.location.longitude}"
+    else:
+        new_location = message.text
+    cursor.execute('UPDATE users SET location = %s WHERE chat_id = %s', (new_location, chat_id))
+    conn.commit()
+    bot.reply_to(message, f"Your location has been updated to {new_location}")
+
+def update_interests(message):
+    chat_id = message.chat.id
+    new_interests = [interest.strip() for interest in message.text.split(',')]
+    cursor.execute('UPDATE users SET interests = %s WHERE chat_id = %s', (', '.join(new_interests), chat_id))
+    conn.commit()
+    bot.reply_to(message, f"Your interests have been updated to {', '.join(new_interests)}")
+
+
+
+## veiw profiles
+
+
+
+
+ 
+   
+
 
 
 bot.polling()
-
-# Close the database connection when the bot stops
-conn.close()
