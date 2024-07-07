@@ -2,6 +2,7 @@ import mysql.connector
 from telebot import TeleBot
 from constant import API_KEY
 from telebot import types
+from geopy.distance import geodesic
 
 bot = TeleBot(API_KEY, parse_mode=None)
 
@@ -153,8 +154,57 @@ def get_user_info(chat_id):
         return user_info
     return None
    
-##my_profile
 
+# Function to calculate similarity score for interests
+def interest_similarity(interests1, interests2):
+    set1 = set(interests1)
+    set2 = set(interests2)
+    return len(set1 & set2) / len(set1 | set2)
+
+# Function to calculate distance between two locations
+def calculate_distance(loc1, loc2):
+    try:
+        coords_1 = tuple(map(float, loc1.split(", ")))
+        coords_2 = tuple(map(float, loc2.split(", ")))
+        return geodesic(coords_1, coords_2).kilometers
+    except ValueError:
+        return float('inf')  # Return a large number if location data is invalid
+
+# Function to get matched profiles from the database
+def get_matched_profiles(user_info):
+    cursor.execute('SELECT * FROM users WHERE gender != %s', (user_info['gender'],))
+    results = cursor.fetchall()
+    matched_profiles = []
+
+    for result in results:
+        other_user_info = {
+            'chat_id': result[0],
+            'name': result[1],
+            'age': result[2],
+            'gender': result[3],
+            'location': result[4],
+            'photo': result[5],
+            'interests': result[6].split(', ')
+        }
+
+        # Calculate scores
+        distance = calculate_distance(user_info['location'], other_user_info['location'])
+        age_diff = abs(int(user_info['age']) - int(other_user_info['age']))
+        interest_score = interest_similarity(user_info['interests'], other_user_info['interests'])
+
+        # Create a combined score with weights (customize weights as needed)
+        combined_score = distance + age_diff - interest_score * 10
+
+        matched_profiles.append((combined_score, other_user_info))
+
+    # Sort profiles by combined score
+    matched_profiles.sort(key=lambda x: x[0])
+
+    # Separate profiles with same interests
+    same_interest_profiles = [profile for profile in matched_profiles if interest_similarity(user_info['interests'], profile[1]['interests']) > 0]
+    different_interest_profiles = [profile for profile in matched_profiles if interest_similarity(user_info['interests'], profile[1]['interests']) == 0]
+
+    return [profile[1] for profile in same_interest_profiles + different_interest_profiles]
 
 @bot.message_handler(commands=['my_profile'])
 def my_profile(message):
@@ -166,7 +216,7 @@ def my_profile(message):
             f"Age: {user_info['age']}\n"
             f"Gender: {user_info['gender']}\n"
             f"Location: {user_info['location']}\n"
-            f"Interests: {user_info['interests']}"
+            f"Interests: {', '.join(user_info['interests'])}"
         ) 
 
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -250,16 +300,75 @@ def update_interests(message):
     conn.commit()
     bot.reply_to(message, f"Your interests have been updated to {', '.join(new_interests)}")
 
+# Function to handle like button
+def handle_like(call):
+    liker_id = call.message.chat.id
+    liked_id = int(call.data.split('_')[1])
+    liker_info = get_user_info(liker_id)
+    liked_info = get_user_info(liked_id)
+    
+    cursor.execute('INSERT INTO likes (liker_id, liked_id) VALUES (%s, %s) ON DUPLICATE KEY UPDATE liker_id = liker_id', (liker_id, liked_id))
+    conn.commit()
+    
+    # Notify the liked user with the actual Telegram username of the liker
+    liker_username = call.from_user.username or liker_info['name']
+    bot.send_message(liked_id, f"Someone liked your profile! Username: @{liker_username}")
+    
+    # Check if there's a mutual like
+    cursor.execute('SELECT * FROM likes WHERE liker_id = %s AND liked_id = %s', (liked_id, liker_id))
+    if cursor.fetchone():
+        # Notify both users about the mutual like with the actual Telegram usernames
+        liked_username = call.from_user.username or liked_info['name']
+        bot.send_message(liker_id, f"You have a mutual like with @{liked_username}!")
+        bot.send_message(liked_id, f"You have a mutual like with @{liker_username}!")
 
+# Function to handle dislike button
+def handle_dislike(call):
+    liker_id = call.message.chat.id
+    liked_id = int(call.data.split('_')[1])
+    cursor.execute('DELETE FROM likes WHERE liker_id = %s AND liked_id = %s', (liker_id, liked_id))
+    conn.commit()
 
-## veiw profiles
+# Callback query handler for like and dislike buttons
+@bot.callback_query_handler(func=lambda call: call.data.startswith('like_') or call.data.startswith('dislike_'))
+def callback_query(call):
+    action, user_id = call.data.split('_')
+    user_info = get_user_info(int(user_id))
+    if action == 'like':
+        handle_like(call)
+    elif action == 'dislike':
+        handle_dislike(call)
 
+# Function to handle /view_profile command
+@bot.message_handler(commands=['view_profile'])
+def view_profile(message):
+    chat_id = message.chat.id
+    user_info = get_user_info(chat_id)
+    if user_info:
+        matched_profiles = get_matched_profiles(user_info)
+        if matched_profiles:
+            for profile in matched_profiles:
+                profile_summary = (
+                    f"Name: {profile['name']}\n"
+                    f"Age: {profile['age']}\n"
+                    f"Gender: {profile['gender']}\n"
+                    f"Location: {profile['location']}\n"
+                    f"Interests: {', '.join(profile['interests'])}"
+                )
 
+                markup = types.InlineKeyboardMarkup()
+                like_button = types.InlineKeyboardButton("Like", callback_data=f"like_{profile['chat_id']}")
+                dislike_button = types.InlineKeyboardButton("Dislike", callback_data=f"dislike_{profile['chat_id']}")
+                markup.add(like_button, dislike_button)
 
+                bot.send_photo(chat_id, profile['photo'], caption=profile_summary, reply_markup=markup)
+        else:
+            bot.reply_to(message, "No matches found.")
+    else:
+        bot.reply_to(message, "No profile found. Please set up your profile using /start.")
 
- 
-   
-
-
-
+# Start polling
 bot.polling()
+
+# Close the database connection when the bot stops
+conn.close()
