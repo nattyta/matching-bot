@@ -1,3 +1,4 @@
+import random
 import mysql.connector
 from telebot import TeleBot
 from constant import API_KEY
@@ -10,14 +11,18 @@ conn = mysql.connector.connect(
     host="127.0.0.1",
     user="root",
     password="Jj1995@idk",
-    database="telegram_bot" 
+    database="telegram_bot"
 )
 cursor = conn.cursor()
 
 user_data = {}
+pending_users = []
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    chat_id = message.chat.id
+    if chat_id not in user_data:
+        user_data[chat_id] = {}
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     markup.add('Set Up Your Profile')
     msg = bot.reply_to(message, "Welcome! Please set up your profile.", reply_markup=markup)
@@ -26,7 +31,6 @@ def send_welcome(message):
 def ask_name(message):
     if message.text == 'Set Up Your Profile':
         chat_id = message.chat.id
-        user_data[chat_id] = {}
         msg = bot.reply_to(message, "Please enter your name:")
         bot.register_next_step_handler(msg, ask_age)
 
@@ -148,7 +152,7 @@ def show_stored_profile(message):
             f"Gender: {user_info['gender']}\n"
             f"Location: {user_info['location']}\n"
             f"Looking for: {'Dating' if user_info['looking_for'] == '1' else 'Friends'}\n"
-            f"Interests: {user_info['interests']}"
+            f"Interests: {', '.join(user_info['interests'].split(', '))}"
         )
         bot.send_photo(chat_id, user_info['photo'], caption=f"Your stored profile:\n\n{profile_summary}")
     else:
@@ -184,12 +188,19 @@ def calculate_distance(loc1, loc2):
     except ValueError:
         return float('inf')
 
-def get_matched_profiles(user_info):
+def get_matched_profiles(user_info, gender_preference):
+    if gender_preference == 'M':
+        gender_condition = 'gender = "M"'
+    elif gender_preference == 'F':
+        gender_condition = 'gender = "F"'
+    else:
+        gender_condition = 'gender IN ("M", "F")'
+
     looking_for = user_info['looking_for']
     if looking_for == '1':
-        cursor.execute('SELECT * FROM users WHERE looking_for = %s AND gender != %s', (looking_for, user_info['gender']))
-    elif looking_for == '2':
-        cursor.execute('SELECT * FROM users WHERE looking_for = %s', (looking_for,))
+        cursor.execute(f'SELECT * FROM users WHERE {gender_condition} AND looking_for = %s', ('1',))
+    else:
+        cursor.execute(f'SELECT * FROM users WHERE {gender_condition} AND looking_for = %s', ('2',))
 
     results = cursor.fetchall()
     matched_profiles = []
@@ -202,25 +213,16 @@ def get_matched_profiles(user_info):
             'gender': result[3],
             'location': result[4],
             'photo': result[5],
-            'interests': result[6].split(', '),
+            'interests': result[6],
             'looking_for': result[7]
         }
-
-        age_diff = abs(int(user_info['age']) - int(other_user_info['age']))
+        age_difference = abs(int(user_info['age']) - int(other_user_info['age']))
         distance = calculate_distance(user_info['location'], other_user_info['location'])
-        interest_score = interest_similarity(user_info['interests'], other_user_info['interests'])
+        similarity_score = interest_similarity(user_info['interests'].split(', '), other_user_info['interests'].split(', '))
+        matched_profiles.append((other_user_info, age_difference, distance, similarity_score))
 
-        matched_profiles.append((other_user_info, age_diff, distance, interest_score))
-
-    prioritized_profiles = [profile for profile in matched_profiles if profile[1] <= 5 and profile[2] <= 50 and profile[3] > 0]
-    non_prioritized_profiles = [profile for profile in matched_profiles if profile not in prioritized_profiles]
-
-    prioritized_profiles.sort(key=lambda x: (x[1], x[2], -x[3]))
-    non_prioritized_profiles.sort(key=lambda x: (-x[3], x[1], x[2]))
-
-    sorted_profiles = prioritized_profiles + non_prioritized_profiles
-
-    return [profile[0] for profile in sorted_profiles]
+    matched_profiles.sort(key=lambda x: (x[1], x[2], -x[3]))
+    return matched_profiles
 
 ##my profile 
 
@@ -319,7 +321,6 @@ def update_interests(message):
     bot.reply_to(message, f"Your interests have been updated to {', '.join(new_interests)}")
 
 
-
 @bot.message_handler(commands=['view_profiles'])
 def show_profiles(message):
     chat_id = message.chat.id
@@ -394,5 +395,121 @@ def display_next_profile(chat_id):
         display_profile(chat_id, matched_profiles[current_index + 1])
     else:
         bot.send_message(chat_id, "No more profiles to display.")
+
+
+@bot.message_handler(commands=['random'])
+def ask_match_preference(message):
+    chat_id = message.chat.id
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(types.KeyboardButton("M"), types.KeyboardButton("F"), types.KeyboardButton("Both"))
+    msg = bot.reply_to(message, "Who would you like to be matched with? (M, F, or Both):", reply_markup=markup)
+    bot.register_next_step_handler(msg, find_random_chat)
+
+def find_random_chat(message):
+    chat_id = message.chat.id
+    gender_preference = message.text.upper()
+
+    if chat_id not in user_data:
+        user_data[chat_id] = {}
+    
+    if chat_id in pending_users:
+        bot.reply_to(message, "You are already in the queue. Please wait for a match.")
+        return
+    
+    user_info = get_user_info(chat_id)
+    if not user_info:
+        bot.reply_to(message, "Please set up your profile using /start.")
+        return
+
+    matched_profiles = get_matched_profiles(user_info, gender_preference)
+    if matched_profiles:
+        partner_info = matched_profiles[0][0]
+        partner_chat_id = partner_info['chat_id']
+        if partner_chat_id in pending_users:
+            pending_users.remove(partner_chat_id)
+            user_data[chat_id]['partner'] = partner_chat_id
+            user_data[partner_chat_id]['partner'] = chat_id
+
+            show_profiles(chat_id, partner_chat_id)
+
+            bot.send_message(chat_id, "You have been matched! Say hi to your new friend.")
+            bot.send_message(partner_chat_id, "You have been matched! Say hi to your new friend.")
+
+            end_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            end_markup.add("End")
+            bot.send_message(chat_id, "Type 'End' to end the chat.", reply_markup=end_markup)
+            bot.send_message(partner_chat_id, "Type 'End' to end the chat.", reply_markup=end_markup)
+        else:
+            pending_users.append(chat_id)
+            bot.reply_to(message, "Waiting for a match...")
+    else:
+        pending_users.append(chat_id)
+        bot.reply_to(message, "Waiting for a match...")
+
+def show_profiles(chat_id, partner_chat_id):
+    user_info = get_user_info(chat_id)
+    partner_info = get_user_info(partner_chat_id)
+    user_profile_summary = (
+        f"Name: {user_info['name']}\n"
+        f"Age: {user_info['age']}\n"
+        f"Gender: {user_info['gender']}\n"
+        f"Location: {user_info['location']}\n"
+        f"Looking for: {'Dating' if user_info['looking_for'] == '1' else 'Friends'}\n"
+        f"Interests: {', '.join(user_info['interests'].split(', '))}"
+    )
+    partner_profile_summary = (
+        f"Name: {partner_info['name']}\n"
+        f"Age: {partner_info['age']}\n"
+        f"Gender: {partner_info['gender']}\n"
+        f"Location: {partner_info['location']}\n"
+        f"Looking for: {'Dating' if partner_info['looking_for'] == '1' else 'Friends'}\n"
+        f"Interests: {', '.join(partner_info['interests'].split(', '))}"
+    )
+
+    bot.send_photo(chat_id, partner_info['photo'], caption=f"Your match's profile:\n\n{partner_profile_summary}")
+    bot.send_photo(partner_chat_id, user_info['photo'], caption=f"Your match's profile:\n\n{user_profile_summary}")
+
+@bot.message_handler(func=lambda message: True)
+def relay_message(message):
+    chat_id = message.chat.id
+    if chat_id in user_data and 'partner' in user_data[chat_id]:
+        partner_chat_id = user_data[chat_id]['partner']
+        if message.text.lower() == 'end':
+            end_chat(chat_id)
+        else:
+            bot.send_message(partner_chat_id, message.text)
+
+def end_chat(chat_id):
+    if chat_id in user_data and 'partner' in user_data[chat_id]:
+        partner_chat_id = user_data[chat_id]['partner']
+        bot.send_message(partner_chat_id, "The chat has been ended by your partner.")
+        bot.send_message(chat_id, "You have ended the chat.")
+        del user_data[chat_id]['partner']
+        del user_data[partner_chat_id]['partner']
+
+        like_next_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        like_next_markup.add("Like", "Next")
+        bot.send_message(chat_id, "Do you want to like this profile or move to the next match?", reply_markup=like_next_markup)
+        bot.send_message(partner_chat_id, "Do you want to like this profile or move to the next match?", reply_markup=like_next_markup)
+
+@bot.message_handler(func=lambda message: message.text in ["Like", "Next"])
+def handle_like_next(message):
+    chat_id = message.chat.id
+    action = message.text
+    if action == "Like":
+        partner_chat_id = user_data[chat_id]['partner']
+        partner_info = get_user_info(partner_chat_id)
+        user_info = get_user_info(chat_id)
+        bot.send_message(partner_chat_id, f"The person you just talked to liked your profile!\n\n{user_info['name']} ({user_info['gender']}, {user_info['age']})\nInterests: {', '.join(user_info['interests'].split(', '))}")
+        bot.send_message(chat_id, "You liked their profile!")
+        next_random_match(chat_id)
+    elif action == "Next":
+        next_random_match(chat_id)
+
+def next_random_match(chat_id):
+    if chat_id in pending_users:
+        pending_users.remove(chat_id)
+    bot.send_message(chat_id, "Finding a new match...")
+    find_random_chat(types.Message(chat=types.Chat(id=chat_id), text='Both'))
 
 bot.polling()
