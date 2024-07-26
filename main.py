@@ -7,6 +7,7 @@ from telebot import types
 from geopy.distance import geodesic
 import logging
 import datetime
+import threading
 
 bot = TeleBot(API_KEY, parse_mode=None)
 
@@ -20,6 +21,26 @@ cursor = conn.cursor()
 
 user_data = {}
 pending_users = []
+users_interacted = set()
+tip_index = {}
+
+tips = [
+    "Do you know you can join or create a community about whatever you like? Just use the command /community!",
+    "Do you know you can have a random chat with someone? Just go to the command /random!"
+]
+
+def send_tips():
+    while True:
+        for chat_id in users_interacted:
+            index = tip_index.get(chat_id, 0)
+            bot.send_message(chat_id, tips[index])
+            tip_index[chat_id] = (index + 1) % len(tips)
+        datetime.time.sleep(86400)  # Send a tip every 24 hours (86400 seconds)
+
+def start_tip_thread():
+    tip_thread = threading.Thread(target=send_tips)
+    tip_thread.daemon = True
+    tip_thread.start()
 
 
 @bot.message_handler(commands=['start'])
@@ -281,7 +302,7 @@ def get_matched_profiles(user_info, gender_preference):
 def show_next_profile(chat_id):
     try:
         if not pending_users:
-            bot.send_message(chat_id, "No more profiles to view.")
+            bot.send_message(chat_id, "No more profiles to view try again later.")
             return
 
         next_user_chat_id = pending_users.pop(0)
@@ -337,7 +358,6 @@ def handle_profile_response(call):
     except Exception as e:
         logging.error(f"Error in handle_profile_response: {e}")
         bot.send_message(chat_id, "you can't like the same account twice  if you wanna reach out send them a note  or press dislike to continue.")
-        show_next_profile(chat_id)
 def save_note(message, other_user_chat_id):
     try:
         chat_id = message.chat.id
@@ -582,7 +602,7 @@ def display_next_profile(chat_id):
         bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
 
 
-@bot.message_handler(commands=['help'])
+@bot.message_handler(commands=['help']) 
 def help_command(message):
     chat_id = message.chat.id
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -791,51 +811,15 @@ def end_chat(chat_id):
         del user_data[chat_id]['partner']
         del user_data[partner_chat_id]['partner']
 
-        like_next_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        like_next_markup.add("Like", "Next")
-        bot.send_message(chat_id, "Do you want to like this profile or move to the next match?", reply_markup=like_next_markup)
-       
+        start_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        start_markup.add("Start")
+        bot.send_message(chat_id, "Do you want to start a new chat?", reply_markup=start_markup)
 
-@bot.message_handler(func=lambda message: message.text in ["Like", "Next"])
-def handle_like(call):
-    chat_id = call.message.chat.id
-    other_user_chat_id = call.data.split('_')[1]
-    user_info = get_user_info(chat_id)
-    liked_user_info = get_user_info(other_user_chat_id)
-    
-    if liked_user_info:
-        like_message = (
-            f"Someone liked your profile!\n\n"
-            f"Name: {user_info['name']}\n"
-            f"Age: {user_info['age']}\n"
-            f"Gender: {user_info['gender']}\n"
-            f"Location: {user_info['location']}\n"
-            f"Interests: {', '.join(user_info['interests'].split(', '))}\n"
-            f"Telegram username: @{call.message.chat.username if call.message.chat.username else 'N/A'}"
-        )
-        bot.send_photo(other_user_chat_id, user_info['photo'], caption= like_message)
-        bot.send_message(other_user_chat_id, like_message)
-        
-        cursor.execute('INSERT INTO likes (liker_chat_id, liked_chat_id) VALUES (%s, %s)', (chat_id, other_user_chat_id))
-        conn.commit()
-        
-        cursor.execute('SELECT * FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s', (other_user_chat_id, chat_id))
-        if cursor.fetchone():
-            bot.send_message(chat_id, f"Someone liked back your profile! Start chatting with @{liked_user_info['name']}.")
-            bot.send_message(other_user_chat_id, f"Someone liked back your profile! Start chatting with @{user_info['name']}.")
-
-        next_random_match(chat_id)
-    elif Action == "Next":
-        next_random_match(chat_id)
-
-def next_random_match(chat_id):
-    if chat_id in pending_users:
-        pending_users.remove(chat_id)
-    bot.send_message(chat_id, "Finding a new match...")
-    find_random_chat(types.Message(chat=types.Chat(id=chat_id), text='Both'))
-
-
-
+@bot.message_handler(func=lambda message: message.text == "Start")
+def handle_start(message):
+    chat_id = message.chat.id
+    bot.send_message(chat_id, "Starting a new chat...")
+    ask_match_preference(types.Message(chat=types.Chat(id=chat_id), text='/random'))
 
 # Start the bot polling
 bot.polling()
