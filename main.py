@@ -1,6 +1,6 @@
 from argparse import Action
 import random
-import mysql.connector
+import psycopg2
 from telebot import TeleBot
 from constant import API_KEY
 from telebot import types
@@ -8,14 +8,16 @@ from geopy.distance import geodesic
 import logging
 import datetime
 import threading
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 bot = TeleBot(API_KEY, parse_mode=None)
 
-conn = mysql.connector.connect(
-    host="127.0.0.1",
-    user="root",
-    password="Jj1995@idk",
-    database="telegram_bot"
+# Update the connection code to use psycopg2 for PostgreSQL
+conn = psycopg2.connect(
+    host="localhost",
+    user="postgres",       
+    password="Jj1995@idk",         
+    dbname="telegram_bot"
 )
 cursor = conn.cursor()
 
@@ -166,9 +168,9 @@ def ask_photo(message):
             bot.register_next_step_handler(msg, ask_interests)
         else:
             msg = bot.reply_to(message, "Please send a photo.")
-            bot.register_next_step_handler(msg, ask_photo)
+            bot.register_next_step_handler(msg, handle_group_photo)  # Ensure this matches your original function name
     except Exception as e:
-        logging.error(f"Error in ask_photo: {e}")
+        logging.error(f"Error in handle_group_photo: {e}")
         bot.reply_to(message, "An unexpected error occurred. Please try again later.")
 
 def ask_interests(message):
@@ -192,22 +194,18 @@ def ask_interests(message):
 
         cursor.execute('''INSERT INTO users (chat_id, name, age, gender, location, photo, interests, looking_for)
                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                          ON DUPLICATE KEY UPDATE
-                          name = VALUES(name),
-                          age = VALUES(age),
-                          gender = VALUES(gender),
-                          location = VALUES(location),
-                          photo = VALUES(photo),
-                          interests = VALUES(interests),
-                          looking_for = VALUES(looking_for)''',
-                       (chat_id,
-                        user_data[chat_id]['name'],
-                        user_data[chat_id]['age'],
-                        user_data[chat_id]['gender'],
-                        user_data[chat_id]['location'],
-                        user_data[chat_id]['photo'],
-                        ', '.join(user_data[chat_id]['interests']),
-                        user_data[chat_id]['looking_for']))
+                          ON CONFLICT (chat_id) DO UPDATE SET
+                          name = EXCLUDED.name,
+                          age = EXCLUDED.age,
+                          gender = EXCLUDED.gender,
+                          location = EXCLUDED.location,
+                          photo = EXCLUDED.photo,
+                          interests = EXCLUDED.interests,
+                          looking_for = EXCLUDED.looking_for''',
+                       (chat_id, user_data[chat_id]['name'], user_data[chat_id]['age'],
+     user_data[chat_id]['gender'], user_data[chat_id]['location'],
+     user_data[chat_id]['photo'], ', '.join(user_data[chat_id]['interests']),
+     user_data[chat_id]['looking_for']) )
         conn.commit()
 
         print(f"User data for {chat_id}: {user_data[chat_id]}")
@@ -486,7 +484,7 @@ def display_profile(chat_id, profile):
         )
         bot.send_photo(chat_id, profile['photo'], caption=f"Matched profile:\n\n{profile_summary}")
 
-        markup = types.InlineKeyboardMarkup()
+        markup = types.InlineKeyboardMarkup(row_width=3)
         btn_like = types.InlineKeyboardButton("👍", callback_data=f"like_{profile['chat_id']}")
         btn_dislike = types.InlineKeyboardButton("👎", callback_data="dislike")
         btn_note = types.InlineKeyboardButton("✍️💌", callback_data=f"note_{profile['chat_id']}")
@@ -572,15 +570,15 @@ def save_note(message, other_user_chat_id):
         if liked_user_info:
             note_message = (
                 f"Someone wrote you a note:\n\n{note}\n\n"
-                f"Name: {user_info['name']}\n"
-                f"Age: {user_info['age']}\n"
-                f"Gender: {user_info['gender']}\n"
-                f"Location: {user_info['location']}\n"
-                f"Interests: {', '.join(user_info['interests'].split(', '))}\n"
+                f"{user_info['name']}, {user_info['age']}, {user_info['location']}, {', '.join(user_info['interests'].split(', '))}\n"
                 f"Telegram username: @{message.chat.username if message.chat.username else 'N/A'}"
             )
-            bot.send_photo(other_user_chat_id, user_info['photo'], caption=note_message )
-            bot.send_message(other_user_chat_id, note_message)
+             # Create inline keyboard for like and dislike options
+            markup = InlineKeyboardMarkup()
+            like_button = InlineKeyboardButton("Like", callback_data=f"like_{chat_id}")
+            dislike_button = InlineKeyboardButton("Dislike", callback_data=f"dislike_{chat_id}")
+            markup.add(like_button, dislike_button)
+            bot.send_photo(other_user_chat_id, user_info['photo'], caption=note_message   reply_markup=markup)
     except Exception as e:
         # Log the error
         print(f"Error occurred: {e}")
@@ -692,40 +690,47 @@ def register_group(message):
     group_description = user_data[chat_id]['group_description']
     group_photo = user_data[chat_id]['group_photo']
 
+    # Validate description and invite link
+    if len(group_description) < 10:
+        bot.send_message(chat_id, "Group description must be at least 10 characters long. Please enter a valid description.")
+        return
+
+    if not invite_link.startswith("https://t.me/"):
+        bot.send_message(chat_id, "Invalid invite link. Please provide a valid Telegram group invite link.")
+        return
+
     try:
-        cursor.execute("INSERT INTO `groups` (name, description, photo, invite_link) VALUES (%s, %s, %s, %s)",
+        cursor.execute("INSERT INTO groups (name, description, photo, invite_link) VALUES (%s, %s, %s, %s)",
                        (group_name, group_description, group_photo, invite_link))
         conn.commit()
         bot.send_message(chat_id, "Your group has been registered successfully!")
-    except mysql.connector.Error as err:
-        bot.send_message(chat_id, f"Error: {err}")
+    except psycopg2.Error as err:
+        bot.send_message(chat_id, f"Error: {str(err)}")
 
 def list_communities(message):
     chat_id = message.chat.id
-    cursor.execute("SELECT name, description, photo, invite_link FROM `groups`")
-    groups = cursor.fetchall()
+    try:
+        cursor.execute("SELECT name, description, photo, invite_link FROM groups")
+        groups = cursor.fetchall()
 
-    if groups:
-        for group in groups:
-            group_name, group_description, group_photo, invite_link = group
-            file_info = bot.get_file(group_photo)
-            photo = bot.download_file(file_info.file_path)
-            with open('group_photo.jpg', 'wb') as new_file:
-                new_file.write(photo)
-
-            with open('group_photo.jpg', 'rb') as photo_file:
+        if groups:
+            for group in groups:
+                group_name, group_description, group_photo, invite_link = group
                 markup = types.InlineKeyboardMarkup()
                 button = types.InlineKeyboardButton("Check out the group", url=invite_link)
                 markup.add(button)
-                bot.send_photo(chat_id, photo_file, caption=f"Name: {group_name}\nDescription: {group_description}", reply_markup=markup)
-    else:
-        bot.send_message(chat_id, "No communities found.")
+                bot.send_photo(chat_id, group_photo, caption=f"Name: {group_name}\nDescription: {group_description}", reply_markup=markup)
+        else:
+            bot.send_message(chat_id, "No communities found.")
+    except psycopg2.Error as err:
+        bot.send_message(chat_id, f"Error fetching communities: {str(err)}")
 
 @bot.message_handler(commands=['random'])
 def ask_match_preference(message):
     chat_id = message.chat.id
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     markup.add(types.KeyboardButton("M"), types.KeyboardButton("F"), types.KeyboardButton("Both"))
+    bot.send_message(chat_id, "Please choose an option:", reply_markup=types.ReplyKeyboardRemove())
     msg = bot.reply_to(message, "Who would you like to be matched with? (M, F, or Both):", reply_markup=markup)
     bot.register_next_step_handler(msg, find_random_chat)
 
@@ -793,27 +798,52 @@ def show_profiles(chat_id, partner_chat_id):
     bot.send_photo(chat_id, partner_info['photo'], caption=f"Your match's profile:\n\n{partner_profile_summary}")
     bot.send_photo(partner_chat_id, user_info['photo'], caption=f"Your match's profile:\n\n{user_profile_summary}")
 
-@bot.message_handler(func=lambda message: True)
 def relay_message(message):
     chat_id = message.chat.id
     if chat_id in user_data and 'partner' in user_data[chat_id]:
         partner_chat_id = user_data[chat_id]['partner']
+        
         if message.text.lower() == 'end':
             end_chat(chat_id)
         else:
-            bot.send_message(partner_chat_id, message.text)
+            bot.send_message(partner_chat_id, f"You've received a note:\n\n{message.text}")
+            
+            # Prompt the receiver with like/dislike options
+            markup = types.InlineKeyboardMarkup()
+            like_button = types.InlineKeyboardButton("👍 Like", callback_data=f"like_{chat_id}")
+            dislike_button = types.InlineKeyboardButton("👎 Dislike", callback_data=f"dislike_{chat_id}")
+            markup.add(like_button, dislike_button)
+            
+            bot.send_message(partner_chat_id, "Would you like to like or dislike the sender's profile?", reply_markup=markup)
+def end_chat(chat_id):
+    if chat_id in user_data and 'partner' in user_data[chat_id]:
+        partner_chat_id = user_data[chat_id]['partner']
+        bot.send_message(partner_chat_id, "The chat has been ended by your partner.")
+        bot.send_message(chat_id, "You have ended the chat.")
+        
+        # Remove the partner data
+        del user_data[chat_id]['partner']
+        del user_data[partner_chat_id]['partner']
+
+        # Start the matchmaking process again after ending the chat
+        bot.send_message(chat_id, "Do you want to start a new chat?")
+        ask_match_preference(types.Message(chat=types.Chat(id=chat_id), text='/random'))  # Re-ask for match preference
+        bot.send_message(partner_chat_id, "You can now start a new chat with someone else. Please wait.")
 
 def end_chat(chat_id):
     if chat_id in user_data and 'partner' in user_data[chat_id]:
         partner_chat_id = user_data[chat_id]['partner']
         bot.send_message(partner_chat_id, "The chat has been ended by your partner.")
         bot.send_message(chat_id, "You have ended the chat.")
+        
+        # Remove the partner data
         del user_data[chat_id]['partner']
         del user_data[partner_chat_id]['partner']
 
-        start_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        start_markup.add("Start")
-        bot.send_message(chat_id, "Do you want to start a new chat?", reply_markup=start_markup)
+        # Start the matchmaking process again after ending the chat
+        bot.send_message(chat_id, "Do you want to start a new chat?")
+        ask_match_preference(types.Message(chat=types.Chat(id=chat_id), text='/random'))  # Re-ask for match preference
+        bot.send_message(partner_chat_id, "You can now start a new chat with someone else. Please wait.")
 
 @bot.message_handler(func=lambda message: message.text == "Start")
 def handle_start(message):
