@@ -8,7 +8,7 @@ from geopy.distance import geodesic
 import logging
 import datetime
 import threading
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton,ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 bot = TeleBot(API_KEY, parse_mode=None)
 
@@ -365,11 +365,26 @@ def save_note(message, other_user_chat_id):
         if liked_user_info:
             note_message = f"Someone sent you a note:\n\n{note}\n\n{user_info['name']} ({user_info['chat_id']})\nTelegram username: @{message.chat.username}"
             bot.send_message(other_user_chat_id, note_message)
-            show_next_profile(chat_id)
+            # Create inline keyboard for like and dislike options
+            markup = InlineKeyboardMarkup()
+            like_button = InlineKeyboardButton("Like", callback_data=f"like_{chat_id}")
+            dislike_button = InlineKeyboardButton("Dislike", callback_data=f"dislike_{chat_id}")
+            markup.add(like_button, dislike_button)
+
+            # Send the sender's profile with the note and buttons
+            bot.send_photo(
+                other_user_chat_id, 
+                user_info['photo'], 
+                caption=note_message, 
+                reply_markup=markup
+            )
+            print("Note sent with Like and Dislike buttons.")  # Debug log
+        else:
+            bot.send_message(chat_id, "The user you are trying to reach was not found.")
     except Exception as e:
-        logging.error(f"Error in save_note: {e}")
-        bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
-        show_next_profile(chat_id)
+        print(f"Error occurred: {e}")
+        bot.send_message(chat_id, "An unexpected error occurred while sending the note. Please try again later.")
+    display_next_profile(chat_id)
 
 @bot.message_handler(commands=['my_profile'])
 def my_profile(message):
@@ -475,28 +490,32 @@ def get_gender_preference(user_info):
 
 def display_profile(chat_id, profile):
     try:
+        # Format the profile summary
         profile_summary = (
-            f"Name: {profile['name']}\n"
-            f"Age: {profile['age']}\n"
-            f"Gender: {profile['gender']}\n"
-            f"Location: {profile['location']}\n"
-            f"Interests: {', '.join(profile['interests'].split(', '))}"
+            f"{profile['name']}, {profile['age']}, 📍 {profile['location']}, "
+            f"{', '.join(profile['interests'].split(', '))}"
         )
-        bot.send_photo(chat_id, profile['photo'], caption=f"Matched profile:\n\n{profile_summary}")
 
-        markup = types.InlineKeyboardMarkup(row_width=3)
-        btn_like = types.InlineKeyboardButton("👍", callback_data=f"like_{profile['chat_id']}")
-        btn_dislike = types.InlineKeyboardButton("👎", callback_data="dislike")
-        btn_note = types.InlineKeyboardButton("✍️💌", callback_data=f"note_{profile['chat_id']}")
-        markup.add(btn_like, btn_dislike, btn_note)
+        # Send the profile photo and summary
+        bot.send_photo(chat_id, profile['photo'], caption=profile_summary)
 
+        # Create the reply keyboard
+        markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        btn_like = KeyboardButton("👍 Like")
+        btn_note = KeyboardButton("✍️ Write Note")
+        btn_dislike = KeyboardButton("👎 Dislike")
+        markup.row(btn_like, btn_note, btn_dislike)  # Place buttons in one row
+
+        # Send a message to display the keyboard
         bot.send_message(chat_id, "Do you like this profile?", reply_markup=markup)
     except Exception as e:
-        # Log the error
+        # Log any errors
         print(f"Error occurred: {e}")
         bot.send_message(chat_id, "An unexpected error occurred while displaying the profile. Please try again later.")
         display_next_profile(chat_id)
 
+
+@bot.callback_query_handler(func=lambda call: True)
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     chat_id = call.message.chat.id
@@ -508,7 +527,6 @@ def handle_callback(call):
         elif call.data.startswith("note_"):
             handle_note_request(call)
     except Exception as e:
-        # Log the error
         print(f"Error occurred: {e}")
         bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
         display_next_profile(chat_id)
@@ -542,13 +560,11 @@ def handle_like(call):
                     bot.send_message(chat_id, f"Someone liked back your profile! Start chatting with @{liked_user_info['name']}.")
                     bot.send_message(other_user_chat_id, f"Someone liked back your profile! Start chatting with @{user_info['name']}.")
             except Exception as e:
-                # Log the error
                 print(f"Error occurred: {e}")
         display_next_profile(chat_id)
     except Exception as e:
-        # Log the error
         print(f"Error occurred: {e}")
-        bot.send_message(chat_id, "you cant like the same account twice if you wanna reach out send them a note ")
+        bot.send_message(chat_id, "You can't like the same account twice. If you want to reach out, send them a note.")
         display_next_profile(chat_id)
 
 def handle_dislike(call):
@@ -573,17 +589,28 @@ def save_note(message, other_user_chat_id):
                 f"{user_info['name']}, {user_info['age']}, {user_info['location']}, {', '.join(user_info['interests'].split(', '))}\n"
                 f"Telegram username: @{message.chat.username if message.chat.username else 'N/A'}"
             )
-             # Create inline keyboard for like and dislike options
-            markup = InlineKeyboardMarkup()
-            like_button = InlineKeyboardButton("Like", callback_data=f"like_{chat_id}")
-            dislike_button = InlineKeyboardButton("Dislike", callback_data=f"dislike_{chat_id}")
-            markup.add(like_button, dislike_button)
-            bot.send_photo(other_user_chat_id, user_info['photo'], caption=note_message   reply_markup=markup)
+            # Create a custom reply keyboard for like and dislike options
+            markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            markup.add(
+                KeyboardButton("👍 Like"),
+                KeyboardButton("👎 Dislike")
+            )
+            bot.send_photo(other_user_chat_id, user_info['photo'], caption=note_message, reply_markup=markup)
     except Exception as e:
-        # Log the error
         print(f"Error occurred: {e}")
         bot.send_message(chat_id, "An unexpected error occurred while sending the note. Please try again later.")
     display_next_profile(chat_id)
+
+@bot.message_handler(func=lambda message: message.text in ["👍 Like", "👎 Dislike"])
+def handle_custom_keyboard_response(message):
+    chat_id = message.chat.id
+    text = message.text
+
+    # Check if the response is a like or dislike
+    if text == "👍 Like":
+        bot.send_message(chat_id, "You've liked the profile!")
+    elif text == "👎 Dislike":
+        display_next_profile(chat_id)
 
 def display_next_profile(chat_id):
     try:
@@ -593,12 +620,10 @@ def display_next_profile(chat_id):
             user_data[chat_id]['current_profile_index'] += 1
             display_profile(chat_id, matched_profiles[current_index + 1][0])
         else:
-            bot.send_message(chat_id, "No more profiles to display.")
+            bot.send_message(chat_id, "No more profiles to display.", reply_markup=ReplyKeyboardRemove())
     except Exception as e:
-        # Log the error
         print(f"Error occurred: {e}")
-        bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
-
+        bot.send_message(chat_id, "An unexpected error occurred. Please try again later.", reply_markup=ReplyKeyboardRemove())
 
 @bot.message_handler(commands=['help']) 
 def help_command(message):
