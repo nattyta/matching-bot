@@ -1,5 +1,5 @@
 -- Create the users table
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     chat_id BIGINT PRIMARY KEY,
     name VARCHAR(255),
     age VARCHAR(10),
@@ -11,7 +11,7 @@ CREATE TABLE users (
 );
 
 -- Create the likes table
-CREATE TABLE likes (
+CREATE TABLE IF NOT EXISTS likes (
     liker_chat_id BIGINT,
     liked_chat_id BIGINT,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -21,10 +21,21 @@ CREATE TABLE likes (
 );
 
 -- Create the groups table
-CREATE TABLE groups (
+CREATE TABLE IF NOT EXISTS groups (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255),
     description TEXT,
     photo VARCHAR(255),
     invite_link VARCHAR(255)
+);
+
+-- Create the reports table
+CREATE TABLE IF NOT EXISTS reports (
+    id SERIAL PRIMARY KEY,
+    reporter_chat_id BIGINT,
+    reported_chat_id BIGINT,
+    violation VARCHAR(255),
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (reporter_chat_id) REFERENCES users(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY (reported_chat_id) REFERENCES users(chat_id) ON DELETE CASCADE
 );
