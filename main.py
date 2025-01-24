@@ -194,15 +194,15 @@ def ask_interests(message):
                                                                      "/help - Get help")
 
         cursor.execute('''INSERT INTO users (chat_id, name, age, gender, location, photo, interests, looking_for)
-                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                          ON DUPLICATE KEY UPDATE
-                          name = VALUES(name),
-                          age = VALUES(age),
-                          gender = VALUES(gender),
-                          location = VALUES(location),
-                          photo = VALUES(photo),
-                          interests = VALUES(interests),
-                          looking_for = VALUES(looking_for)''',
+                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                  ON CONFLICT (chat_id) DO UPDATE 
+                  SET name = EXCLUDED.name,
+                      age = EXCLUDED.age,
+                      gender = EXCLUDED.gender,
+                      location = EXCLUDED.location,
+                      photo = EXCLUDED.photo,
+                      interests = EXCLUDED.interests,
+                      looking_for = EXCLUDED.looking_for''',
                        (chat_id,
                         user_data[chat_id]['name'],
                         user_data[chat_id]['age'],
@@ -217,6 +217,22 @@ def ask_interests(message):
     except Exception as e:
         logging.error(f"Error in ask_interests: {e}")
         bot.reply_to(message, "An unexpected error occurred. Please try again later.")
+
+def save_user_name(message, username):
+    chat_id = message.chat.id
+    name = message.text.strip()
+
+    # Save the user's name and Telegram username to the `users` table
+    try:
+        cursor.execute(
+            'INSERT INTO users (chat_id, name, username) VALUES (%s, %s, %s) ON CONFLICT (chat_id) DO UPDATE SET name = %s, username = %s',
+            (chat_id, name, username, name, username)
+        )
+        conn.commit()
+        bot.send_message(chat_id, "Profile setup complete!")
+    except Exception as e:
+        logging.error(f"Error saving user profile: {e}")
+        bot.send_message(chat_id, "An error occurred while saving your profile. Please try again.")
 
 @bot.message_handler(commands=['profile'])
 def show_stored_profile(message):
@@ -335,34 +351,60 @@ def show_next_profile(chat_id):
         bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
         show_next_profile(chat_id)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('like_') or call.data.startswith('dislike_') or call.data.startswith('note_'))
-def handle_profile_response(call):
+def handle_inline_response(call):
     try:
         action, other_user_chat_id = call.data.split('_')
         chat_id = call.message.chat.id
 
         if action == 'like':
-            cursor.execute('INSERT INTO likes (liker_chat_id, liked_chat_id) VALUES (%s, %s)', (chat_id, other_user_chat_id))
-            conn.commit()
+            # Check if the like already exists
+            cursor.execute(
+                'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
+                (chat_id, other_user_chat_id)
+            )
+            like_exists = cursor.fetchone()
+
             user_info = get_user_info(chat_id)
             liked_user_info = get_user_info(other_user_chat_id)
+
             if liked_user_info:
+                # Notify the liked user regardless of whether it's a new like
                 like_message = f"{user_info['name']} ({user_info['chat_id']}) liked your profile!\nTelegram username: @{call.message.chat.username}"
                 bot.send_message(other_user_chat_id, like_message)
-                cursor.execute('SELECT * FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s', (other_user_chat_id, chat_id))
+
+                # Check if the like is mutual
+                cursor.execute(
+                    'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
+                    (other_user_chat_id, chat_id)
+                )
                 if cursor.fetchone():
                     bot.send_message(chat_id, f"You and {liked_user_info['name']} liked each other! Send a message to start chatting.")
                     bot.send_message(other_user_chat_id, f"You and {user_info['name']} liked each other! Send a message to start chatting.")
+
+            if not like_exists:
+                # Insert the like if it's a new one
+                cursor.execute(
+                    'INSERT INTO likes (liker_chat_id, liked_chat_id) VALUES (%s, %s)',
+                    (chat_id, other_user_chat_id)
+                )
+                conn.commit()
+
+            # Show the next profile
             show_next_profile(chat_id)
 
         elif action == 'dislike':
+            # Simply show the next profile
             show_next_profile(chat_id)
 
         elif action == 'note':
+            # Ask the user to write a note
             msg = bot.send_message(chat_id, "Please write your note:")
             bot.register_next_step_handler(msg, save_note, other_user_chat_id)
+
     except Exception as e:
         logging.error(f"Error in handle_profile_response: {e}")
-        bot.send_message(chat_id, "you can't like the same account twice  if you wanna reach out send them a note  or press dislike to continue.")
+        bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
+
 def save_note(message, other_user_chat_id):
     try:
         chat_id = message.chat.id
@@ -509,7 +551,7 @@ def display_profile(chat_id, profile):
 
 
 @bot.message_handler(func=lambda message: message.text in ["👍 Like", "👎 Dislike", "✍️ Write Note"])
-def handle_profile_response(message):
+def handle_text_response(message):
     print(f"Debug: Received unmatched message: {message.text}", flush=True)
     chat_id = message.chat.id
     try:
