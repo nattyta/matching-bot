@@ -50,8 +50,9 @@ def start_tip_thread():
 def send_welcome(message):
     try:
         chat_id = message.chat.id
+        username = message.from_user.username
         if chat_id not in user_data:
-            user_data[chat_id] = {}
+            user_data[chat_id] = {'username': username}
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         markup.add('Set Up Your Profile')
         msg = bot.reply_to(message, "Welcome! Please set up your profile.", reply_markup=markup)
@@ -193,10 +194,12 @@ def ask_interests(message):
                                                                      "/random - Chat with a random user who's online\n"
                                                                      "/help - Get help")
 
-        cursor.execute('''INSERT INTO users (chat_id, name, age, gender, location, photo, interests, looking_for)
-                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+         # Insert or update the user in the database
+        cursor.execute('''INSERT INTO users (chat_id, username, name, age, gender, location, photo, interests, looking_for)
+                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                   ON CONFLICT (chat_id) DO UPDATE 
-                  SET name = EXCLUDED.name,
+                  SET username = EXCLUDED.username,
+                      name = EXCLUDED.name,
                       age = EXCLUDED.age,
                       gender = EXCLUDED.gender,
                       location = EXCLUDED.location,
@@ -204,6 +207,7 @@ def ask_interests(message):
                       interests = EXCLUDED.interests,
                       looking_for = EXCLUDED.looking_for''',
                        (chat_id,
+                        user_data[chat_id]['username'],  # Save the username
                         user_data[chat_id]['name'],
                         user_data[chat_id]['age'],
                         user_data[chat_id]['gender'],
@@ -213,6 +217,7 @@ def ask_interests(message):
                         user_data[chat_id]['looking_for']))
         conn.commit()
 
+
         print(f"User data for {chat_id}: {user_data[chat_id]}")
     except Exception as e:
         logging.error(f"Error in ask_interests: {e}")
@@ -221,6 +226,7 @@ def ask_interests(message):
 def save_user_name(message, username):
     chat_id = message.chat.id
     name = message.text.strip()
+    username = message.from_user.username
 
     # Save the user's name and Telegram username to the `users` table
     try:
@@ -353,58 +359,90 @@ def show_next_profile(chat_id):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('like_') or call.data.startswith('dislike_') or call.data.startswith('note_'))
 def handle_inline_response(call):
     try:
+        # Extract action and target chat ID from callback data
         action, other_user_chat_id = call.data.split('_')
         chat_id = call.message.chat.id
 
+        # Retrieve user and liked user info
+        user_info = get_user_info(chat_id)
+        liked_user_info = get_user_info(other_user_chat_id)
+
+        if not user_info:
+            bot.send_message(chat_id, "Your profile information could not be retrieved.")
+            return
+
+        if not liked_user_info:
+            bot.send_message(chat_id, "The selected profile information could not be retrieved.")
+            return
+
+        # Handle actions
         if action == 'like':
-            # Check if the like already exists
-            cursor.execute(
-                'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
-                (chat_id, other_user_chat_id)
-            )
-            like_exists = cursor.fetchone()
-
-            user_info = get_user_info(chat_id)
-            liked_user_info = get_user_info(other_user_chat_id)
-
-            if liked_user_info:
-                # Notify the liked user regardless of whether it's a new like
-                like_message = f"{user_info['name']} ({user_info['chat_id']}) liked your profile!\nTelegram username: @{call.message.chat.username}"
-                bot.send_message(other_user_chat_id, like_message)
-
-                # Check if the like is mutual
-                cursor.execute(
-                    'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
-                    (other_user_chat_id, chat_id)
-                )
-                if cursor.fetchone():
-                    bot.send_message(chat_id, f"You and {liked_user_info['name']} liked each other! Send a message to start chatting.")
-                    bot.send_message(other_user_chat_id, f"You and {user_info['name']} liked each other! Send a message to start chatting.")
-
-            if not like_exists:
-                # Insert the like if it's a new one
-                cursor.execute(
-                    'INSERT INTO likes (liker_chat_id, liked_chat_id) VALUES (%s, %s)',
-                    (chat_id, other_user_chat_id)
-                )
-                conn.commit()
-
-            # Show the next profile
-            show_next_profile(chat_id)
-
+            handle_like_action(chat_id, other_user_chat_id, user_info, liked_user_info)
         elif action == 'dislike':
-            # Simply show the next profile
-            show_next_profile(chat_id)
-
+            handle_dislike_action(chat_id)
         elif action == 'note':
-            # Ask the user to write a note
-            msg = bot.send_message(chat_id, "Please write your note:")
-            bot.register_next_step_handler(msg, save_note, other_user_chat_id)
+            handle_send_note_action(chat_id, other_user_chat_id)
+        else:
+            bot.answer_callback_query(call.id, "Invalid action.")
 
     except Exception as e:
-        logging.error(f"Error in handle_profile_response: {e}")
-        bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
+        print(f"Error in handle_inline_response: {e}")
+        bot.send_message(call.message.chat.id, "An unexpected error occurred. Please try again later.")
 
+def handle_like_action(liker_chat_id, liked_chat_id, user_info, liked_user_info):
+    try:
+        # Notify the liked user
+        markup = InlineKeyboardMarkup()
+        btn_see_who = InlineKeyboardButton("👀 See Who Liked You", callback_data="view_likes")
+        btn_dislike = InlineKeyboardButton("❌ Dislike", callback_data=f"dislike_{liker_chat_id}")
+        markup.add(btn_see_who, btn_dislike)
+
+        bot.send_message(
+                liked_chat_id,
+                "Someone liked your profile! Use the buttons below:",
+                reply_markup=markup
+            )
+
+        # Check if the like already exists
+        cursor.execute(
+            'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
+            (liker_chat_id, liked_chat_id)
+        )
+        like_exists = cursor.fetchone()
+
+        # Insert like if it doesn't exist
+        if not like_exists:
+            cursor.execute(
+                'INSERT INTO likes (liker_chat_id, liked_chat_id, timestamp) VALUES (%s, %s, %s)',
+                (liker_chat_id, liked_chat_id, datetime.datetime.now())
+            )
+            conn.commit()
+
+        # Check for mutual like
+        cursor.execute(
+            'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
+            (liked_chat_id, liker_chat_id)
+        )
+        if cursor.fetchone():
+            bot.send_message(liker_chat_id, f"You and {liked_user_info['name']} liked each other! Start chatting.")
+            bot.send_message(liked_chat_id, f"You and {user_info['name']} liked each other! Start chatting.")
+
+        # Show the next profile
+        display_next_profile(liker_chat_id)
+
+    except Exception as e:
+     import traceback
+     print(f"Error in handle_like_action: {e}")
+     print(traceback.format_exc())  # Print the full traceback for debugging
+     bot.send_message(liker_chat_id, "An unexpected error occurred. Please try again later.")
+
+def handle_dislike_action(chat_id):
+    try:
+        # Just display the next profile
+        display_next_profile(chat_id)
+    except Exception as e:
+        print(f"Error in handle_dislike_action: {e}")
+        bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
 def save_note(message, other_user_chat_id):
     try:
         chat_id = message.chat.id
@@ -575,7 +613,12 @@ def handle_text_response(message):
             elif message.text == "👎 Dislike":
                 display_next_profile(chat_id)
             elif message.text == "✍️ Write Note":
-                handle_note_request(chat_id, other_user_chat_id)
+                # Save the liked user's chat_id to user_data
+                user_data[chat_id]['current_liked_chat_id'] = other_user_chat_id
+                
+                # Ask the user to type their note
+                bot.send_message(chat_id, "✍️ Please type your note:")
+                bot.register_next_step_handler(message, handle_note_input)
         else:
             bot.send_message(chat_id, "No profile selected. Please try again.")
     except Exception as e:
@@ -597,7 +640,7 @@ def handle_like(liker_chat_id, liked_chat_id):
         if liked_user_info:
             # Notify the liked user with the updated button
             markup = InlineKeyboardMarkup()
-            btn_see_who = InlineKeyboardButton("👀 See Who Liked You", callback_data="/view_likes")
+            btn_see_who = InlineKeyboardButton("👀 See Who Liked You", callback_data="view_likes")
             btn_dislike = InlineKeyboardButton("❌ Dislike", callback_data=f"dislike:{liker_chat_id}")
             markup.add(btn_see_who, btn_dislike)
 
@@ -635,21 +678,37 @@ def handle_like(liker_chat_id, liked_chat_id):
         bot.send_message(liker_chat_id, "An unexpected error occurred. Please try again later.")
         display_next_profile(liker_chat_id)
 
-
+@bot.callback_query_handler(func=lambda call: True)
+def inline_button_handler(call):
+    if call.data.startswith("dislike"):
+        handle_dislike(call)
+    elif call.data == "view_likes":
+        handle_view_likes(call)
+    else:
+        bot.answer_callback_query(call.id, "Invalid action.")
 
 def display_next_profile(chat_id):
     try:
-        current_index = user_data[chat_id]['current_profile_index']
+        # Validate that the user has profile data
+        if chat_id not in user_data or 'matched_profiles' not in user_data[chat_id]:
+            bot.send_message(chat_id, "No profiles available. Please try again later.")
+            return
+
         matched_profiles = user_data[chat_id]['matched_profiles']
+        current_index = user_data[chat_id].get('current_profile_index', -1)  # Default to -1 if not set
 
+        # Check if there are more profiles to display
         if current_index + 1 < len(matched_profiles):
-            user_data[chat_id]['current_profile_index'] += 1
-            display_profile(chat_id, matched_profiles[current_index + 1])
+            # Update the current index
+            current_index += 1
+            user_data[chat_id]['current_profile_index'] = current_index
 
+            # Display the next profile
+            display_profile(chat_id, matched_profiles[current_index])
         else:
             bot.send_message(chat_id, "No more profiles to display.")
     except Exception as e:
-        print(f"Error occurred: {e}")
+        print(f"Error occurred in display_next_profile: {e}")
         bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
 
 
@@ -719,7 +778,7 @@ def handle_like_back(message,liked_id):
             elif call.data == "dislike":
                 handle_dislike(call)
             elif call.data.startswith("note_"):
-                handle_note_request(call)
+                handle_send_note_action(call)
             elif call.data == "continue_viewing_profiles":
                 display_next_profile(call.message.chat.id)
         except Exception as e:
@@ -740,28 +799,74 @@ def handle_continue_viewing(message):
     display_next_profile(chat_id)
 
 
-def handle_note_request(call):
-    chat_id = call.message.chat.id
-    other_user_chat_id = call.data.split('_')[1]
-    msg = bot.send_message(chat_id, "Please write your note:")
-    bot.register_next_step_handler(msg, save_note, other_user_chat_id)
 
-
-def save_note(message, other_user_chat_id):
+@bot.message_handler(func=lambda message: message.text == "✍️ Write Note")
+def ask_for_note_input(message):
     chat_id = message.chat.id
-    note = message.text
+
+    # Check if there are matched profiles
+    matched_profiles = user_data.get(chat_id, {}).get('matched_profiles', [])
+    current_index = user_data.get(chat_id, {}).get('current_profile_index', 0)
+
+    if not matched_profiles or current_index < 0 or current_index >= len(matched_profiles):
+        bot.send_message(chat_id, "❌ No profile available to send a note.")
+        return
+
+    # Get the liked user's chat_id
+    liked_chat_id = matched_profiles[current_index][0]['chat_id']
+    user_data[chat_id]['current_liked_chat_id'] = liked_chat_id
+
+    # Ask the user to type their note
+    bot.send_message(chat_id, "✍️ Please type your note:")
+    bot.register_next_step_handler(message, handle_note_input)
+
+
+def handle_note_input(message):
+    chat_id = message.chat.id
+    note_text = message.text.strip()  # Capture the text the user typed
+
+    # Retrieve the liked user's chat_id
+    liked_chat_id = user_data.get(chat_id, {}).get('current_liked_chat_id')
+    if not liked_chat_id:
+        bot.send_message(chat_id, "❌ No profile selected to send a note.")
+        return
+
+    # Call the send note action
+    handle_send_note_action(liker_chat_id=chat_id, liked_chat_id=liked_chat_id, note_text=note_text)
+
+
+def handle_send_note_action(liker_chat_id, liked_chat_id, note_text):
+    print(f"handle_send_note_action: liker_chat_id={liker_chat_id}, liked_chat_id={liked_chat_id}, note_text={note_text}")
+
     try:
-        user_info = get_user_info(chat_id)
-        liked_user_info = get_user_info(other_user_chat_id)
-        if liked_user_info:
-            note_message = f"Someone wrote you a note:\n\n{note}\n\nStart chatting with @{user_info['name']}."
-            bot.send_message(other_user_chat_id, note_message)
+        # Save the note to the database
+        cursor.execute(
+            'INSERT INTO likes (liker_chat_id, liked_chat_id, note) VALUES (%s, %s, %s) '
+            'ON CONFLICT (liker_chat_id, liked_chat_id) DO UPDATE SET note = EXCLUDED.note',
+            (liker_chat_id, liked_chat_id, note_text)
+        )
+        conn.commit()
+
+        # Create inline buttons
+        markup = InlineKeyboardMarkup()
+        btn_see_who = InlineKeyboardButton("👤 See Who", callback_data=f"see_who_{liker_chat_id}")
+        btn_dislike = InlineKeyboardButton("👎 Dislike", callback_data=f"dislike_{liker_chat_id}")
+        markup.add(btn_see_who, btn_dislike)
+
+        # Notify the liked user
+        bot.send_message(
+            liked_chat_id,
+            "📩 Someone wrote you a note:\n\n"
+            "✉️ You have a new note! Check it now.",
+            reply_markup=markup
+        )
+
+        # Confirm to the sender
+        bot.send_message(liker_chat_id, "✅ Your note has been sent!")
+        display_next_profile(liker_chat_id)
     except Exception as e:
-        print(f"Error occurred: {e}")
-        bot.send_message(chat_id, "An unexpected error occurred while sending the note. Please try again later.")
-    display_next_profile(chat_id)
-
-
+        print(f"Error in handle_send_note_action: {e}")
+        bot.send_message(liker_chat_id, "❌ An error occurred while sending the note.")
 
 
 def generate_like_dislike_buttons(liker_id):
@@ -772,36 +877,62 @@ def generate_like_dislike_buttons(liker_id):
     markup.row(like_button, dislike_button)
     return markup
 
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @bot.message_handler(commands=['view_likes'])
 def handle_view_likes(message):
-    """Fetch and display profiles of users who liked the current user."""
+    """Fetch and display profiles of users who liked the current user, with pagination."""
     try:
-        chat_id = message.chat.id
+        chat_id = message.chat.id if hasattr(message, 'chat') else message.message.chat.id
+        offset = 0  # Default offset for pagination
+        limit = 5  # Number of likes to display per page
 
-        # Fetch the list of user IDs who liked this user
+        # Call the helper function to show likes
+        display_likes(chat_id, offset, limit)
+    except Exception as e:
+        print(f"Error in /view_likes: {e}")
+        bot.send_message(chat_id, "An error occurred while fetching your likes. Please try again later.")
+
+
+def display_likes(chat_id, offset, limit):
+    """Helper function to display likes with pagination, including notes if available."""
+    try:
+        # Fetch the total number of likes
         cursor.execute(
             """
-            SELECT liker_chat_id
+            SELECT COUNT(*)
             FROM likes
             WHERE liked_chat_id = %s
             """,
             (chat_id,)
         )
-        likers = cursor.fetchall()
+        total_likes = cursor.fetchone()[0]
 
-        if not likers:
+        if total_likes == 0:
             bot.send_message(chat_id, "No one has liked your profile yet.")
             return
 
-        # Iterate through the likers and display their profiles
-        for liker in likers:
-            liker_id = liker[0]
+        # Fetch the list of likes with pagination
+        cursor.execute(
+            """
+            SELECT liker_chat_id, note
+            FROM likes
+            WHERE liked_chat_id = %s
+            ORDER BY timestamp DESC  -- Show latest likes first
+            LIMIT %s OFFSET %s
+            """,
+            (chat_id, limit, offset)
+        )
+        likers = cursor.fetchall()
 
-            # Fetch profile information and photo of the liker
+        # Display each liker’s profile
+        for liker in likers:
+            liker_id, note = liker
+
+            # Fetch liker profile details
             cursor.execute(
                 """
-                SELECT name, age, location, interests, photo
+                SELECT name, age, location, interests, photo, username
                 FROM users
                 WHERE chat_id = %s
                 """,
@@ -810,30 +941,58 @@ def handle_view_likes(message):
             user_info = cursor.fetchone()
 
             if user_info:
-                name, age, location, interests, photo_url = user_info
+                name, age, location, interests, photo_url, username = user_info
+                username_display = f"@{username}" if username else "No username"
+                profile_details = f"{name}, {age}, {location}, {interests}\nUsername: {username_display}"
 
-                # Format the profile details
-                profile_details = f"{name}, {age}, {location}, {interests}"
+                # Include note if available
+                if note:
+                    profile_details += f"\n\n📝 Note: {note}"
 
-                # Send the photo with profile details and buttons
                 try:
                     bot.send_photo(
                         chat_id,
                         photo_url,
                         caption=profile_details,
-                        reply_markup=generate_like_dislike_buttons(liker_id)
+                        reply_markup=generate_like_dislike_buttons(liker_id)  # Attach the buttons
                     )
                 except Exception as photo_error:
                     print(f"Error sending photo: {photo_error}")
-                    bot.send_message(
-                        chat_id,
-                        f"{profile_details}\n\n(⚠️ Unable to load photo)",
-                        reply_markup=generate_like_dislike_buttons(liker_id)
-                    )
-    except Exception as e:
-        print(f"Error in /view_likes: {e}")
-        bot.send_message(chat_id, "An error occurred while fetching your likes. Please try again later.")
+                    bot.send_message(chat_id, f"{profile_details}\n\n(⚠️ Unable to load photo)")
 
+        # Create navigation buttons if there are more likes
+        markup = InlineKeyboardMarkup()
+
+        if offset + limit < total_likes:
+            # Add "Previous" button to fetch older likes
+            markup.add(InlineKeyboardButton("Previous", callback_data=f"view_likes_previous:{offset + limit}"))
+
+        if offset > 0:
+            # Add "Next" button to fetch newer likes
+            prev_offset = max(offset - limit, 0)
+            markup.add(InlineKeyboardButton("Next", callback_data=f"view_likes_previous:{prev_offset}"))
+
+        if markup.keyboard:
+            bot.send_message(chat_id, "Use the buttons below to navigate likes:", reply_markup=markup)
+    except Exception as e:
+        print(f"Error in display_likes: {e}")
+        bot.send_message(chat_id, "An error occurred while fetching likes. Please try again later.")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("view_likes_previous"))
+def handle_view_likes_callback(call):
+    """Handle 'Previous' button to paginate through likes."""
+    try:
+        chat_id = call.message.chat.id
+        data = call.data.split(":")
+        offset = int(data[1])
+        limit = 5
+
+        # Call the helper function to display likes with updated offset
+        display_likes(chat_id, offset, limit)
+    except Exception as e:
+        print(f"Error in handle_view_likes_callback: {e}")
+        bot.send_message(chat_id, "An error occurred while fetching likes. Please try again later.")
 
 
 @bot.message_handler(commands=['help']) 
