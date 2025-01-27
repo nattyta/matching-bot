@@ -389,52 +389,86 @@ def handle_inline_response(call):
         print(f"Error in handle_inline_response: {e}")
         bot.send_message(call.message.chat.id, "An unexpected error occurred. Please try again later.")
 
+
 def handle_like_action(liker_chat_id, liked_chat_id, user_info, liked_user_info):
     try:
-        # Notify the liked user
-        markup = InlineKeyboardMarkup()
-        btn_see_who = InlineKeyboardButton("👀 See Who Liked You", callback_data="view_likes")
-        btn_dislike = InlineKeyboardButton("❌ Dislike", callback_data=f"dislike_{liker_chat_id}")
-        markup.add(btn_see_who, btn_dislike)
+        # Notify the liked user with action buttons
+        if liked_user_info:
+            markup = InlineKeyboardMarkup()
+            btn_see_who = InlineKeyboardButton("👀 See Who Liked You", callback_data="view_likes")
+            btn_dislike = InlineKeyboardButton("❌ Dislike", callback_data=f"dislike_{liker_chat_id}")
+            markup.add(btn_see_who, btn_dislike)
 
-        bot.send_message(
+            bot.send_message(
                 liked_chat_id,
                 "Someone liked your profile! Use the buttons below:",
                 reply_markup=markup
             )
 
-        # Check if the like already exists
-        cursor.execute(
-            'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
-            (liker_chat_id, liked_chat_id)
-        )
-        like_exists = cursor.fetchone()
+        # Save or update the like in the database
+        like_timestamp = datetime.datetime.now()
 
-        # Insert like if it doesn't exist
-        if not like_exists:
+        try:
+            # Check if the like already exists
             cursor.execute(
-                'INSERT INTO likes (liker_chat_id, liked_chat_id, timestamp) VALUES (%s, %s, %s)',
-                (liker_chat_id, liked_chat_id, datetime.datetime.now())
+                'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
+                (liker_chat_id, liked_chat_id)
             )
+            existing_like = cursor.fetchone()
+
+            if existing_like:
+                # Update the timestamp if the like exists
+                cursor.execute(
+                    '''
+                    UPDATE likes
+                    SET timestamp = %s
+                    WHERE liker_chat_id = %s AND liked_chat_id = %s
+                    ''',
+                    (like_timestamp, liker_chat_id, liked_chat_id)
+                )
+                print("Timestamp updated for existing like.")
+            else:
+                # Insert a new like if it doesn't exist
+                cursor.execute(
+                    '''
+                    INSERT INTO likes (liker_chat_id, liked_chat_id, timestamp)
+                    VALUES (%s, %s, %s)
+                    ''',
+                    (liker_chat_id, liked_chat_id, like_timestamp)
+                )
+                print("New like successfully added.")
+
             conn.commit()
 
+        except Exception as db_error:
+            print(f"Database error in handle_like_action: {db_error}")
+            conn.rollback()
+            bot.send_message(liker_chat_id, "There was an issue saving your like. Please try again.")
+            return
+
         # Check for mutual like
-        cursor.execute(
-            'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
-            (liked_chat_id, liker_chat_id)
-        )
-        if cursor.fetchone():
-            bot.send_message(liker_chat_id, f"You and {liked_user_info['name']} liked each other! Start chatting.")
-            bot.send_message(liked_chat_id, f"You and {user_info['name']} liked each other! Start chatting.")
+        try:
+            cursor.execute(
+                'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
+                (liked_chat_id, liker_chat_id)
+            )
+            mutual_like = cursor.fetchone()
+
+            if mutual_like:
+                bot.send_message(liker_chat_id, f"You and {liked_user_info['name']} liked each other! Start chatting.")
+                bot.send_message(liked_chat_id, f"You and {user_info['name']} liked each other! Start chatting.")
+
+        except Exception as mutual_like_error:
+            print(f"Error checking for mutual like: {mutual_like_error}")
 
         # Show the next profile
         display_next_profile(liker_chat_id)
 
     except Exception as e:
-     import traceback
-     print(f"Error in handle_like_action: {e}")
-     print(traceback.format_exc())  # Print the full traceback for debugging
-     bot.send_message(liker_chat_id, "An unexpected error occurred. Please try again later.")
+        import traceback
+        print(f"Error in handle_like_action: {e}")
+        print(traceback.format_exc())  # Print the full traceback for debugging
+        bot.send_message(liker_chat_id, "An unexpected error occurred. Please try again later.")
 
 def handle_dislike_action(chat_id):
     try:
@@ -650,21 +684,40 @@ def handle_like(liker_chat_id, liked_chat_id):
                 reply_markup=markup
             )
 
-        # Save like in the database if it doesn't already exist
+         # Save like in the database or update the timestamp if it already exists
         try:
             like_timestamp = datetime.datetime.now()
+
+            # Check if the like already exists
             cursor.execute(
                 'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
                 (liker_chat_id, liked_chat_id)
             )
             existing_like = cursor.fetchone()
 
-            if not existing_like:
+            if existing_like:
+                # Update the timestamp if the like exists
                 cursor.execute(
-                    'INSERT INTO likes (liker_chat_id, liked_chat_id, timestamp) VALUES (%s, %s, %s)',
+                    '''
+                    UPDATE likes
+                    SET timestamp = %s
+                    WHERE liker_chat_id = %s AND liked_chat_id = %s
+                    ''',
+                    (like_timestamp, liker_chat_id, liked_chat_id)
+                )
+                print("Timestamp updated for existing like.")
+            else:
+                # Insert a new like if it doesn't exist
+                cursor.execute(
+                    '''
+                    INSERT INTO likes (liker_chat_id, liked_chat_id, timestamp)
+                    VALUES (%s, %s, %s)
+                    ''',
                     (liker_chat_id, liked_chat_id, like_timestamp)
                 )
-                conn.commit()
+                print("New like successfully added.")
+
+            conn.commit()
 
         except Exception as db_error:
             print(f"Database error in handle_like: {db_error}")
@@ -714,7 +767,7 @@ def display_next_profile(chat_id):
 
 
 @bot.message_handler(func=lambda message: message.text.startswith("❤️ Like"))
-def handle_like_back(message,liked_id):
+def handle_like_back(message,liked_chat_id):
     chat_id = message.chat.id
 
     try:
@@ -727,20 +780,40 @@ def handle_like_back(message,liked_id):
 
         liker_chat_id = text_parts[1]
 # Save like in the database if it doesn't already exist
+        # Save like in the database or update the timestamp if it already exists
         try:
             like_timestamp = datetime.datetime.now()
+
+            # Check if the like already exists
             cursor.execute(
                 'SELECT 1 FROM likes WHERE liker_chat_id = %s AND liked_chat_id = %s',
-                (liker_chat_id, liked_id)
+                (liker_chat_id, liked_chat_id)
             )
             existing_like = cursor.fetchone()
 
-            if not existing_like:
+            if existing_like:
+                # Update the timestamp if the like exists
                 cursor.execute(
-                    'INSERT INTO likes (liker_chat_id, liked_id, timestamp) VALUES (%s, %s, %s)',
-                    (liker_chat_id, liked_id, like_timestamp)
+                    '''
+                    UPDATE likes
+                    SET timestamp = %s
+                    WHERE liker_chat_id = %s AND liked_chat_id = %s
+                    ''',
+                    (like_timestamp, liker_chat_id, liked_chat_id)
                 )
-                conn.commit()
+                print("Timestamp updated for existing like.")
+            else:
+                # Insert a new like if it doesn't exist
+                cursor.execute(
+                    '''
+                    INSERT INTO likes (liker_chat_id, liked_chat_id, timestamp)
+                    VALUES (%s, %s, %s)
+                    ''',
+                    (liker_chat_id, liked_chat_id, like_timestamp)
+                )
+                print("New like successfully added.")
+
+            conn.commit()
 
         except Exception as db_error:
             print(f"Database error in handle_like: {db_error}")
@@ -824,7 +897,7 @@ def ask_for_note_input(message):
 def handle_note_input(message):
     chat_id = message.chat.id
     note_text = message.text.strip()  # Capture the text the user typed
-
+    
     # Retrieve the liked user's chat_id
     liked_chat_id = user_data.get(chat_id, {}).get('current_liked_chat_id')
     if not liked_chat_id:
@@ -837,21 +910,28 @@ def handle_note_input(message):
 
 def handle_send_note_action(liker_chat_id, liked_chat_id, note_text):
     print(f"handle_send_note_action: liker_chat_id={liker_chat_id}, liked_chat_id={liked_chat_id}, note_text={note_text}")
-
+    # Save or update the like in the database
+    like_timestamp = datetime.datetime.now()
     try:
         # Save the note to the database
         cursor.execute(
-            'INSERT INTO likes (liker_chat_id, liked_chat_id, note) VALUES (%s, %s, %s) '
-            'ON CONFLICT (liker_chat_id, liked_chat_id) DO UPDATE SET note = EXCLUDED.note',
-            (liker_chat_id, liked_chat_id, note_text)
+            '''
+         INSERT INTO likes (liker_chat_id, liked_chat_id, note, timestamp)
+         VALUES (%s, %s, %s, %s)
+         ON CONFLICT (liker_chat_id, liked_chat_id)
+         DO UPDATE SET
+         note = EXCLUDED.note,
+         timestamp = EXCLUDED.timestamp
+         ''',
+            (liker_chat_id, liked_chat_id, note_text,like_timestamp)
         )
         conn.commit()
 
-        # Create inline buttons
         markup = InlineKeyboardMarkup()
-        btn_see_who = InlineKeyboardButton("👤 See Who", callback_data=f"see_who_{liker_chat_id}")
-        btn_dislike = InlineKeyboardButton("👎 Dislike", callback_data=f"dislike_{liker_chat_id}")
+        btn_see_who = InlineKeyboardButton("👀 See Who Liked You", callback_data="view_likes")
+        btn_dislike = InlineKeyboardButton("❌ Dislike", callback_data=f"dislike_{liker_chat_id}")
         markup.add(btn_see_who, btn_dislike)
+
 
         # Notify the liked user
         bot.send_message(
