@@ -27,8 +27,8 @@ users_interacted = set()
 tip_index = {}
 
 tips = [
-    "Do you know you can join or create a community about whatever you like? Just use the command /community!",
-    "Do you know you can have a random chat with someone? Just go to the command /random!"
+    "Do you know you can join or create a community about whatever you like? Just use the command /community/!",
+    "Do you know you can have a random chat with someone? Just go to the command /random/!"
 ]
 
 def send_tips():
@@ -55,7 +55,7 @@ def send_welcome(message):
             user_data[chat_id] = {'username': username}
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         markup.add('Set Up Your Profile')
-        msg = bot.reply_to(message, "Welcome! Please set up your profile.", reply_markup=markup)
+        msg = bot.reply_to(message, "Welcome/! Please set up your profile.", reply_markup=markup)
         bot.register_next_step_handler(msg, ask_name)
     except Exception as e:
         logging.error(f"Error in send_welcome: {e}")
@@ -155,7 +155,7 @@ def handle_location_or_prompt_for_location(message):
             user_data[chat_id]['location'] = f"{message.location.latitude}, {message.location.longitude}"
         else:
             user_data[chat_id]['location'] = message.text
-        msg = bot.reply_to(message, "Almost done! Please send a photo of yourself:")
+        msg = bot.reply_to(message, "Almost done/! Please send a photo of yourself:")
         bot.register_next_step_handler(msg, ask_photo)
     except Exception as e:
         logging.error(f"Error in handle_location_or_prompt_for_location: {e}")
@@ -166,7 +166,7 @@ def ask_photo(message):
         chat_id = message.chat.id
         if message.content_type == 'photo':
             user_data[chat_id]['photo'] = message.photo[-1].file_id
-            msg = bot.reply_to(message, "Almost done! Please enter your interests (separate keywords with commas):")
+            msg = bot.reply_to(message, "Almost done/! Please enter your interests (separate keywords with commas):")
             bot.register_next_step_handler(msg, ask_interests)
         else:
             msg = bot.reply_to(message, "Please send a photo.")
@@ -382,6 +382,10 @@ def handle_inline_response(call):
             handle_dislike_action(chat_id)
         elif action == 'note':
             handle_send_note_action(chat_id, other_user_chat_id)
+        elif call.data.startswith("report"):
+             handle_report(call)  # 🚩 Fix: Add Report Handling Here
+        elif call.data.startswith("violation_"):
+              handle_violation(call)  # 🚩 Fix: Add Violation Handling Here
         else:
             bot.answer_callback_query(call.id, "Invalid action.")
 
@@ -737,6 +741,10 @@ def inline_button_handler(call):
         handle_dislike(call)
     elif call.data == "view_likes":
         handle_view_likes(call)
+    elif call.data.startswith("report_"):
+        handle_report(call)  # 🚩 Fix: Add Report Handling Here
+    elif call.data.startswith("violation_"):
+        handle_violation(call)  # 🚩 Fix: Add Violation Handling Here
     else:
         bot.answer_callback_query(call.id, "Invalid action.")
 
@@ -949,15 +957,16 @@ def handle_send_note_action(liker_chat_id, liked_chat_id, note_text):
         bot.send_message(liker_chat_id, "❌ An error occurred while sending the note.")
 
 
-def generate_like_dislike_buttons(liker_id):
+def generate_like_dislike_buttons(liker_id,reported_id):
     """Generate inline buttons for Like and Dislike actions."""
     markup = InlineKeyboardMarkup()
     like_button = InlineKeyboardButton("👍 Like", callback_data=f"like_{liker_id}")
     dislike_button = InlineKeyboardButton("👎 Dislike", callback_data=f"dislike_{liker_id}")
+    report_button = InlineKeyboardButton("🚩 Report", callback_data=f"report_{reported_id}")
     markup.row(like_button, dislike_button)
+    markup.add(report_button)
     return markup
 
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @bot.message_handler(commands=['view_likes'])
 def handle_view_likes(message):
@@ -1075,33 +1084,31 @@ def handle_view_likes_callback(call):
         bot.send_message(chat_id, "An error occurred while fetching likes. Please try again later.")
 
 
-@bot.message_handler(commands=['help']) 
+@bot.message_handler(commands=['help'])
 def help_command(message):
-    chat_id = message.chat.id
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add("How to use the bot", "Complain", "Contact us")
-    msg = bot.send_message(chat_id, "Choose an option:", reply_markup=markup)
-    bot.register_next_step_handler(msg, handle_help_choice)
+    """
+    Handles the /help command to provide plain text instructions without buttons.
+    """
+    try:
+        # Plain text instructions
+        help_text = (
+            "Welcome to our bot! Here's how to use it:\n\n"
+            "1️⃣ *Create a Community*: Use /community to create your own community or to join communities you like.\n\n"
+            "2️⃣ *View and Match Profiles*: Use /view_profiles to browse through profiles. You can like, dislike, or report profiles.\n\n"
+            "3️⃣ *Random Chats*: Use /random to chat with random users within the bot.\n\n"
+            "4️⃣ *Submit a Complaint*: To report issues or provide feedback, please send your concerns directly to @meh9061.\n\n"
+            "5️⃣ *Contact Us*: For any inquiries, you can reach us at:\n"
+            "   - 📧 Email: natnaeltakele36@gmail.com\n"
+            "   - 📞 Phone: +251935519061\n\n"
+            "We're here to help you! 😊"
+        )
 
-def handle_help_choice(message):
-    chat_id = message.chat.id
-    choice = message.text.lower()
-    
-    if choice == 'how to use the bot':
-        bot.send_message(chat_id, 
-                         "Instructions on how to use the bot:\n\n"
-                         "1. Use /start to set up your profile.\n"
-                         "2. Use /random to find a match.\n"
-                         "3. Follow the prompts to chat with your match.\n"
-                         "4. Use 'End' to end the chat and /edit_profile to edit your profile.\n\n"
-                         "For any help, please contact @meh9061.")
-    elif choice == 'complain':
-        bot.send_message(chat_id, "If you have a complaint, please contact @meh9061.")
-    elif choice == 'contact us':
-        bot.send_message(chat_id, "For any inquiries, please contact us at 0935519061.")
-    else:
-        msg = bot.send_message(chat_id, "Invalid choice. Please choose again.")
-        bot.register_next_step_handler(msg, handle_help_choice)
+        # Send the help text message
+        bot.send_message(message.chat.id, help_text)
+
+    except Exception as e:
+        print(f"Error in help_command: {e}")
+        bot.send_message(message.chat.id, "Something went wrong. Please try again.")
 
 
 @bot.message_handler(commands=['community'])
@@ -1166,16 +1173,16 @@ def register_group(message):
     group_photo = user_data[chat_id]['group_photo']
 
     try:
-        cursor.execute("INSERT INTO `groups` (name, description, photo, invite_link) VALUES (%s, %s, %s, %s)",
+        cursor.execute("INSERT INTO groups (name, description, photo, invite_link) VALUES (%s, %s, %s, %s)",
                        (group_name, group_description, group_photo, invite_link))
         conn.commit()
-        bot.send_message(chat_id, "Your group has been registered successfully!")
+        bot.send_message(chat_id, "Your group has been registered successfully/!")
     except conn.Error as err:
         bot.send_message(chat_id, f"Error: {err}")
 
 def list_communities(message):
     chat_id = message.chat.id
-    cursor.execute("SELECT name, description, photo, invite_link FROM `groups`")
+    cursor.execute("SELECT name, description, photo, invite_link FROM groups")
     groups = cursor.fetchall()
 
     if groups:
@@ -1229,8 +1236,8 @@ def find_random_chat(message):
 
             show_profiles(chat_id, partner_chat_id)
 
-            bot.send_message(chat_id, "You have been matched! Say hi to your new friend.")
-            bot.send_message(partner_chat_id, "You have been matched! Say hi to your new friend.")
+            bot.send_message(chat_id, "You have been matched/! Say hi to your new friend.")
+            bot.send_message(partner_chat_id, "You have been matched/! Say hi to your new friend.")
 
             end_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
             end_markup.add("End")
@@ -1276,25 +1283,101 @@ def relay_message(message):
         else:
             bot.send_message(partner_chat_id, message.text)
 
+
 def end_chat(chat_id):
     if chat_id in user_data and 'partner' in user_data[chat_id]:
         partner_chat_id = user_data[chat_id]['partner']
-        bot.send_message(partner_chat_id, "The chat has been ended by your partner.")
-        bot.send_message(chat_id, "You have ended the chat.")
+
+        # Generate buttons correctly
+        markup = generate_like_dislike_buttons(chat_id, partner_chat_id)
+        partner_markup = generate_like_dislike_buttons(partner_chat_id, chat_id)
+
+        # Send the message with buttons
+        bot.send_message(partner_chat_id, "Do you like the person you just talked with?", reply_markup=markup)
+        bot.send_message(chat_id, "Do you like the person you just talked with?", reply_markup=partner_markup)
+
+        # Clean up user data
         del user_data[chat_id]['partner']
         del user_data[partner_chat_id]['partner']
+    else:
+        bot.send_message(chat_id, "You are not in a chat currently.") 
 
-        start_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        start_markup.add("Start")
-        bot.send_message(chat_id, "Do you want to start a new chat?", reply_markup=start_markup)
+        
+@bot.callback_query_handler(func=lambda call: call.data.startswith("like_") or call.data.startswith("dislike_"))
+def handle_like_dislike(call):
+    liker_id = call.from_user.id
+    liked_disliked_id = int(call.data.split("_")[1])
+    action = call.data.split("_")[0]
 
-@bot.message_handler(func=lambda message: message.text == "Start")
-def handle_start(message):
-    chat_id = message.chat.id
-    bot.send_message(chat_id, "Starting a new chat...")
-    ask_match_preference(types.Message(chat=types.Chat(id=chat_id), text='/random'))
+    if action == "like":
+        # Handle "like" logic (e.g., storing in a database or notifying the liked user)
+        bot.answer_callback_query(call.id, "You liked the person!")
+        bot.send_message(liked_disliked_id, "Someone liked you!")
+    elif action == "dislike":
+        # Handle "dislike" logic
+        bot.answer_callback_query(call.id, "You disliked the person!")
+
+    # Match with the next profile
+    bot.send_message(liker_id, "Finding your next match...")
+    find_random_chat(types.Message(chat=types.Chat(id=liker_id), text="M, F, or Both"))  # Adjust gender preference
 
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("report_"))
+def handle_report(call):
+    reported_id = call.data.split("_")[1]  # Extract reported user ID
+    reporter_id = call.from_user.id  # The user who clicked the report button
+
+    # Ask the reporter to select a violation type
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🚨 Offensive Language", callback_data=f"violation_offensive_{reported_id}"))
+    markup.add(InlineKeyboardButton("📢 Spamming", callback_data=f"violation_spamming_{reported_id}"))
+    markup.add(InlineKeyboardButton("🔞 Inappropriate Content", callback_data=f"violation_inappropriate_{reported_id}"))
+
+    bot.send_message(reporter_id, "Please select the reason for reporting:", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("violation_"))
+def handle_violation(call):
+    try:
+        data_parts = call.data.split("_", 2)  # Ensure correct splitting
+        violation_type = data_parts[1]  # e.g., offensive, spamming, inappropriate
+        reported_user_id = int(data_parts[2])
+
+        bot.answer_callback_query(call.id, "Report submitted.")
+        bot.send_message(call.from_user.id, "Your report has been logged. Thank you.")
+
+        # Save report to DB
+        query = "INSERT INTO reports (reporter_chat_id, reported_chat_id, violation) VALUES (%s, %s, %s)"
+        cursor.execute(query, (call.from_user.id, reported_user_id, violation_type))
+        conn.commit()
+
+        # Check for warnings and bans
+        check_reports(reported_user_id)
+
+    except Exception as e:
+        bot.send_message(call.from_user.id, f"Error processing report: {str(e)}")  # Debugging
+
+
+def check_reports(reported_chat_id):
+    query = """
+        SELECT violation, COUNT(*) as count 
+        FROM reports 
+        WHERE reported_chat_id = %s 
+        GROUP BY violation
+    """
+    cursor.execute(query, (reported_chat_id,))
+    violations = cursor.fetchall()
+
+    for violation in violations:
+        if violation['count'] == 3:
+            bot.send_message(reported_chat_id, f"Warning: You have received 3 reports for {violation['violation']}. Please adhere to the guidelines.")
+        elif violation['count'] == 5:
+            # Ban the user
+            bot.send_message(reported_chat_id, f"You have been banned for receiving 5 reports for {violation['violation']}.")
+            # Optionally, remove the user from the database or mark them as banned
+            query = "DELETE FROM users WHERE chat_id = %s"
+            cursor.execute(query, (reported_chat_id,))
+            conn.commit()
 
 
 
