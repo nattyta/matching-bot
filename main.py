@@ -5,6 +5,7 @@ from telebot import TeleBot
 from constant import API_KEY
 from telebot import types
 from geopy.distance import geodesic
+from geopy.geocoders import Nominatim
 import logging
 import datetime
 import threading
@@ -25,6 +26,7 @@ user_data = {}
 pending_users = []
 users_interacted = set()
 tip_index = {}
+user_likes = {}
 
 tips = [
     "Do you know you can join or create a community about whatever you like? Just use the command /community/!",
@@ -51,12 +53,26 @@ def send_welcome(message):
     try:
         chat_id = message.chat.id
         username = message.from_user.username
+
+        # Check if the user is banned
+        query = "SELECT user_id FROM banned_users WHERE user_id = %s"
+        cursor.execute(query, (chat_id,))
+        banned_user = cursor.fetchone()
+
+        if banned_user:
+            bot.send_message(chat_id, "❌ You have been banned and cannot use this bot.")
+            return  # Stop execution
+
+        # Initialize user data if not already stored
         if chat_id not in user_data:
             user_data[chat_id] = {'username': username}
+
+        # Show profile setup option
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         markup.add('Set Up Your Profile')
-        msg = bot.reply_to(message, "Welcome/! Please set up your profile.", reply_markup=markup)
+        msg = bot.reply_to(message, "Welcome! Please set up your profile.", reply_markup=markup)
         bot.register_next_step_handler(msg, ask_name)
+
     except Exception as e:
         logging.error(f"Error in send_welcome: {e}")
         bot.reply_to(message, "An unexpected error occurred. Please try again later.")
@@ -148,6 +164,18 @@ def validate_looking_for(message):
         logging.error(f"Error in validate_looking_for: {e}")
         bot.reply_to(message, "An unexpected error occurred. Please try again later.")
 
+
+def get_country_from_coordinates(latitude, longitude):
+    """Convert coordinates to a country name."""
+    geolocator = Nominatim(user_agent="geo_bot")  
+    location = geolocator.reverse((latitude, longitude), exactly_one=True)
+    
+    if location and 'country' in location.raw['address']:
+        return location.raw['address']['country']
+    
+    return "Unknown Location"  
+
+
 def handle_location_or_prompt_for_location(message):
     try:
         chat_id = message.chat.id
@@ -178,7 +206,23 @@ def ask_photo(message):
 def ask_interests(message):
     try:
         chat_id = message.chat.id
+
+        # Ensure user_data exists for this chat_id
+        if chat_id not in user_data:
+            user_data[chat_id] = {}
+
+        # Check if 'username' is missing and fetch from the database
+        if 'username' not in user_data[chat_id]:
+            cursor.execute("SELECT username FROM users WHERE chat_id = %s", (chat_id,))
+            result = cursor.fetchone()
+            if result:
+                user_data[chat_id]['username'] = result[0]  # Fetch username from DB
+            else:
+                user_data[chat_id]['username'] = message.from_user.username or "Unknown"
+
+        # Process interests
         user_data[chat_id]['interests'] = [interest.strip() for interest in message.text.split(',')]
+        
         profile_summary = (
             f"Name: {user_data[chat_id]['name']}\n"
             f"Age: {user_data[chat_id]['age']}\n"
@@ -194,7 +238,7 @@ def ask_interests(message):
                                                                      "/random - Chat with a random user who's online\n"
                                                                      "/help - Get help")
 
-         # Insert or update the user in the database
+        # Insert or update user data in the database
         cursor.execute('''INSERT INTO users (chat_id, username, name, age, gender, location, photo, interests, looking_for)
                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                   ON CONFLICT (chat_id) DO UPDATE 
@@ -207,7 +251,7 @@ def ask_interests(message):
                       interests = EXCLUDED.interests,
                       looking_for = EXCLUDED.looking_for''',
                        (chat_id,
-                        user_data[chat_id]['username'],  # Save the username
+                        user_data[chat_id]['username'],
                         user_data[chat_id]['name'],
                         user_data[chat_id]['age'],
                         user_data[chat_id]['gender'],
@@ -216,7 +260,6 @@ def ask_interests(message):
                         ', '.join(user_data[chat_id]['interests']),
                         user_data[chat_id]['looking_for']))
         conn.commit()
-
 
         print(f"User data for {chat_id}: {user_data[chat_id]}")
     except Exception as e:
@@ -382,10 +425,7 @@ def handle_inline_response(call):
             handle_dislike_action(chat_id)
         elif action == 'note':
             handle_send_note_action(chat_id, other_user_chat_id)
-        elif call.data.startswith("report"):
-             handle_report(call)  # 🚩 Fix: Add Report Handling Here
-        elif call.data.startswith("violation_"):
-              handle_violation(call)  # 🚩 Fix: Add Violation Handling Here
+        
         else:
             bot.answer_callback_query(call.id, "Invalid action.")
 
@@ -957,12 +997,18 @@ def handle_send_note_action(liker_chat_id, liked_chat_id, note_text):
         bot.send_message(liker_chat_id, "❌ An error occurred while sending the note.")
 
 
-def generate_like_dislike_buttons(liker_id,reported_id):
+def generate_like_dislike_buttons(liker_id,liked_id):
     """Generate inline buttons for Like and Dislike actions."""
+    print(f"Generating buttons - Liker ID: {liker_id}, Reported ID: {liked_id}")  # Debugging Log
+
+    user_likes[liked_id] = liker_id  # Store the liker under liked_id
+
+
+
     markup = InlineKeyboardMarkup()
     like_button = InlineKeyboardButton("👍 Like", callback_data=f"like_{liker_id}")
     dislike_button = InlineKeyboardButton("👎 Dislike", callback_data=f"dislike_{liker_id}")
-    report_button = InlineKeyboardButton("🚩 Report", callback_data=f"report_{reported_id}")
+    report_button = InlineKeyboardButton("🚩 Report", callback_data=f"report_{liked_id}")  # 🔹 Fix: Pass liker_id instead
     markup.row(like_button, dislike_button)
     markup.add(report_button)
     return markup
@@ -1043,7 +1089,7 @@ def display_likes(chat_id, offset, limit):
                         chat_id,
                         photo_url,
                         caption=profile_details,
-                        reply_markup=generate_like_dislike_buttons(liker_id)  # Attach the buttons
+                        reply_markup=generate_like_dislike_buttons(liker_id, chat_id)  # Attach the buttons
                     )
                 except Exception as photo_error:
                     print(f"Error sending photo: {photo_error}")
@@ -1214,7 +1260,7 @@ def find_random_chat(message):
     gender_preference = message.text.upper()
 
     if chat_id not in user_data:
-        user_data[chat_id] = {}
+        user_data[chat_id] = {}  # Ensure user data structure exists
 
     if chat_id in pending_users:
         bot.reply_to(message, "You are already in the queue. Please wait for a match.")
@@ -1226,25 +1272,35 @@ def find_random_chat(message):
         return
 
     matched_profiles = get_matched_profiles(user_info, gender_preference)
+    
     if matched_profiles:
         partner_info = matched_profiles[0][0]
         partner_chat_id = partner_info['chat_id']
+
         if partner_chat_id in pending_users:
-            pending_users.remove(partner_chat_id)
+            pending_users.remove(partner_chat_id)  # Remove from waiting list
+            
+            # Ensure partner data exists
+            if partner_chat_id not in user_data:
+                user_data[partner_chat_id] = {}
+
+            # Store partner connections
             user_data[chat_id]['partner'] = partner_chat_id
             user_data[partner_chat_id]['partner'] = chat_id
 
             show_profiles(chat_id, partner_chat_id)
 
-            bot.send_message(chat_id, "You have been matched/! Say hi to your new friend.")
-            bot.send_message(partner_chat_id, "You have been matched/! Say hi to your new friend.")
+            bot.send_message(chat_id, "You have been matched! Say hi to your new friend.")
+            bot.send_message(partner_chat_id, "You have been matched! Say hi to your new friend.")
 
+            # Add "End" button to exit chat
             end_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
             end_markup.add("End")
             bot.send_message(chat_id, "Type 'End' to end the chat.", reply_markup=end_markup)
             bot.send_message(partner_chat_id, "Type 'End' to end the chat.", reply_markup=end_markup)
+
         else:
-            pending_users.append(chat_id)
+            pending_users.append(chat_id)  # Use append() instead of add()
             bot.reply_to(message, "Waiting for a match...")
     else:
         pending_users.append(chat_id)
@@ -1285,22 +1341,34 @@ def relay_message(message):
 
 
 def end_chat(chat_id):
-    if chat_id in user_data and 'partner' in user_data[chat_id]:
-        partner_chat_id = user_data[chat_id]['partner']
+    try:
+        if chat_id in user_data and 'partner' in user_data[chat_id]:
+            partner_chat_id = user_data[chat_id]['partner']
 
-        # Generate buttons correctly
-        markup = generate_like_dislike_buttons(chat_id, partner_chat_id)
-        partner_markup = generate_like_dislike_buttons(partner_chat_id, chat_id)
+            # Debugging: Ensure correct IDs are being passed
+            print(f"[DEBUG] Ending chat - User1 (ID: {chat_id}), User2 (ID: {partner_chat_id})")
 
-        # Send the message with buttons
-        bot.send_message(partner_chat_id, "Do you like the person you just talked with?", reply_markup=markup)
-        bot.send_message(chat_id, "Do you like the person you just talked with?", reply_markup=partner_markup)
+            # Generate buttons correctly
+            markup = generate_like_dislike_buttons(chat_id, partner_chat_id)
+            partner_markup = generate_like_dislike_buttons(partner_chat_id, chat_id)
 
-        # Clean up user data
-        del user_data[chat_id]['partner']
-        del user_data[partner_chat_id]['partner']
-    else:
-        bot.send_message(chat_id, "You are not in a chat currently.") 
+            # Send the message with buttons
+            bot.send_message(partner_chat_id, "Do you like the person you just talked with?", reply_markup=markup)
+            bot.send_message(chat_id, "Do you like the person you just talked with?", reply_markup=partner_markup)
+
+            # Clean up user data safely
+            user_data[chat_id].pop('partner', None)
+            user_data[partner_chat_id].pop('partner', None)
+
+        else:
+            bot.send_message(chat_id, "❌ You are not in a chat currently.")
+
+    except KeyError as e:
+        print(f"[ERROR] KeyError in end_chat: {e}")
+    except Exception as e:
+        print(f"[ERROR] Unexpected error in end_chat: {e}")
+
+
 
         
 @bot.callback_query_handler(func=lambda call: call.data.startswith("like_") or call.data.startswith("dislike_"))
@@ -1322,64 +1390,121 @@ def handle_like_dislike(call):
     find_random_chat(types.Message(chat=types.Chat(id=liker_id), text="M, F, or Both"))  # Adjust gender preference
 
 
+# ✅ Handle Report (Now correctly identifies the reported user)
 @bot.callback_query_handler(func=lambda call: call.data.startswith("report_"))
 def handle_report(call):
-    reported_id = call.data.split("_")[1]  # Extract reported user ID
-    reporter_id = call.from_user.id  # The user who clicked the report button
+    try:
+        reporter_id = call.from_user.id  # The user clicking the report button
+        
+        # 🔹 Retrieve the correct reported_id from our dictionary
+        reported_id = user_likes.get(reporter_id)  
 
-    # Ask the reporter to select a violation type
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🚨 Offensive Language", callback_data=f"violation_offensive_{reported_id}"))
-    markup.add(InlineKeyboardButton("📢 Spamming", callback_data=f"violation_spamming_{reported_id}"))
-    markup.add(InlineKeyboardButton("🔞 Inappropriate Content", callback_data=f"violation_inappropriate_{reported_id}"))
+        if not reported_id:
+         print(f"[ERROR] Reported ID not found for {reporter_id}! Trying alternative lookup...")
+    
+          # Alternative: Look for a stored user from past interactions
+         reported_id = next((key for key, val in user_likes.items() if val == reporter_id), None)
 
-    bot.send_message(reporter_id, "Please select the reason for reporting:", reply_markup=markup)
+        if not reported_id:
+         bot.answer_callback_query(call.id, "⚠️ Error: Could not determine reported user.")
+         return
 
+        # Debugging: Ensure correct IDs
+        print(f"[DEBUG] Report Action Triggered - Reporter: {reporter_id}, Reported: {reported_id}")
+
+        print(f"[DEBUG] User Likes Data: {user_likes}")
+        print(f"[DEBUG] Retrieved Reported ID: {reported_id} for Reporter: {reporter_id}")
+
+
+        # Ask for report reason
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("Spam", callback_data=f"violation_spam_{reported_id}"))
+        markup.add(InlineKeyboardButton("Harassment", callback_data=f"violation_harassment_{reported_id}"))
+        markup.add(InlineKeyboardButton("Other", callback_data=f"violation_other_{reported_id}"))
+
+        bot.send_message(reporter_id, "⚠️ Please select a reason for reporting:", reply_markup=markup)
+
+    except Exception as e:
+        print(f"[ERROR] Error in handle_report: {e}")
+        bot.answer_callback_query(call.id, "❌ An error occurred. Please try again.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("violation_"))
 def handle_violation(call):
     try:
-        data_parts = call.data.split("_", 2)  # Ensure correct splitting
-        violation_type = data_parts[1]  # e.g., offensive, spamming, inappropriate
-        reported_user_id = int(data_parts[2])
+        data_parts = call.data.split('_')
+        violation_type = data_parts[1]  # Type of violation
+        reported_id = int(data_parts[2])  # Reported user ID
+        reporter_id = call.from_user.id  # The user submitting the report
 
-        bot.answer_callback_query(call.id, "Report submitted.")
-        bot.send_message(call.from_user.id, "Your report has been logged. Thank you.")
+        # Debugging: Ensure IDs and violation type are correct
+        print(f"[DEBUG] Violation Action - Reporter: {reporter_id}, Reported: {reported_id}, Type: {violation_type}")
 
-        # Save report to DB
-        query = "INSERT INTO reports (reporter_chat_id, reported_chat_id, violation) VALUES (%s, %s, %s)"
-        cursor.execute(query, (call.from_user.id, reported_user_id, violation_type))
+        # Prevent self-reporting
+        if reporter_id == reported_id:
+            bot.answer_callback_query(call.id, "❌ You cannot report yourself.")
+            return
+
+        # Save the report to the database
+        query = """
+            INSERT INTO reports (reporter_chat_id, reported_chat_id, violation)
+            VALUES (%s, %s, %s)
+        """
+        cursor.execute(query, (reporter_id, reported_id, violation_type))
         conn.commit()
 
-        # Check for warnings and bans
-        check_reports(reported_user_id)
+        # Notify the reporter that the report was successfully submitted
+        bot.answer_callback_query(call.id, "✅ Thank you! Your report has been submitted.")
+
+        # Check reports and take action if necessary
+        check_reports(reported_id, reporter_id)
 
     except Exception as e:
-        bot.send_message(call.from_user.id, f"Error processing report: {str(e)}")  # Debugging
+        print(f"[ERROR] Error in handle_violation: {e}")
+        bot.answer_callback_query(call.id, "❌ An error occurred. Please try again.")
 
 
-def check_reports(reported_chat_id):
-    query = """
-        SELECT violation, COUNT(*) as count 
-        FROM reports 
-        WHERE reported_chat_id = %s 
-        GROUP BY violation
-    """
-    cursor.execute(query, (reported_chat_id,))
-    violations = cursor.fetchall()
+def check_reports(reported_chat_id, reporter_chat_id):
+    try:
+        # Fetch the count of violations for the reported user
+        query = """
+            SELECT violation, COUNT(*) as count 
+            FROM reports 
+            WHERE reported_chat_id = %s 
+            GROUP BY violation
+        """
+        cursor.execute(query, (reported_chat_id,))
+        violations = cursor.fetchall()
 
-    for violation in violations:
-        if violation['count'] == 3:
-            bot.send_message(reported_chat_id, f"Warning: You have received 3 reports for {violation['violation']}. Please adhere to the guidelines.")
-        elif violation['count'] == 5:
-            # Ban the user
-            bot.send_message(reported_chat_id, f"You have been banned for receiving 5 reports for {violation['violation']}.")
-            # Optionally, remove the user from the database or mark them as banned
-            query = "DELETE FROM users WHERE chat_id = %s"
-            cursor.execute(query, (reported_chat_id,))
-            conn.commit()
+        for violation in violations:
+            violation_type = violation[0]  # First column (violation)
+            report_count = violation[1]   # Second column (count)
 
+            if report_count == 3:
+                # Send warning to the reported user
+                bot.send_message(
+                    reported_chat_id,
+                    f"Warning: You have received 3 reports for {violation_type}. Please adhere to the guidelines.",
+                )
+            elif report_count == 5:
+                # Ban the reported user
+                bot.send_message(
+                    reported_chat_id,
+                    f"You have been banned for receiving 5 reports for {violation_type}.",
+                )
 
+                # Insert the banned user into the banned_users table
+                query = "INSERT INTO banned_users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING"
+                cursor.execute(query, (reported_chat_id,))
+                conn.commit()
+
+        # After handling warnings/bans, match the reporter with the next profile
+        bot.send_message(reporter_chat_id, "Finding your next match...")
+        find_random_chat(
+            types.Message(chat=types.Chat(id=reporter_chat_id), text="M, F, or Both")
+        )  # Adjust for gender preference
+
+    except Exception as e:
+        print(f"Error processing check_reports: {e}")
 
 
 # Start the bot polling
