@@ -661,48 +661,67 @@ def display_profile(chat_id, profile):
     except Exception as e:
         # Log the error
         print(f"Error occurred: {e}")
-        bot.send_message(chat_id, "An unexpected error occurred while displaying the profile. Please try again later.")
+        
         display_next_profile(chat_id)
 
 
 
 @bot.message_handler(func=lambda message: message.text in ["👍 Like", "👎 Dislike", "✍️ Write Note"])
 def handle_text_response(message):
-    print(f"Debug: Received unmatched message: {message.text}", flush=True)
+    print(f"[DEBUG] Received user action: {message.text}", flush=True)
     chat_id = message.chat.id
+
     try:
-        # Debugging user_data
-        print(f"user_data[chat_id]: {user_data[chat_id]}", flush=True)
+        # Ensure user has matched profiles stored
+        if chat_id not in user_data or 'matched_profiles' not in user_data[chat_id]:
+            print(f"[ERROR] No matched profiles found for user {chat_id}", flush=True)
+            return  # ❌ No message sent to user
 
-        current_index = user_data[chat_id]['current_profile_index'] - 1
+        # Get the current profile index safely
+        current_index = user_data[chat_id].get('current_profile_index', -1)  # Default to -1 if not set
         matched_profiles = user_data[chat_id]['matched_profiles']
-        
-        # Debugging matched_profiles
-        print(f"matched_profiles: {matched_profiles}", flush=True)
-        print(f"current_index: {current_index}", flush=True)
 
-        if current_index < len(matched_profiles):
-            # Extract the dictionary from the tuple
-            profile_data = matched_profiles[current_index][0]
-            other_user_chat_id = profile_data['chat_id']
-            
-            if message.text == "👍 Like":
-                handle_like(chat_id, other_user_chat_id)
-            elif message.text == "👎 Dislike":
-                display_next_profile(chat_id)
-            elif message.text == "✍️ Write Note":
-                # Save the liked user's chat_id to user_data
-                user_data[chat_id]['current_liked_chat_id'] = other_user_chat_id
-                
-                # Ask the user to type their note
-                bot.send_message(chat_id, "✍️ Please type your note:")
-                bot.register_next_step_handler(message, handle_note_input)
+        print(f"[DEBUG] Matched profiles count: {len(matched_profiles)} for {chat_id}", flush=True)
+        print(f"[DEBUG] Current profile index: {current_index}", flush=True)
+
+        # Ensure index is within range
+        if current_index < 0 or current_index >= len(matched_profiles):
+            print(f"[ERROR] Invalid index {current_index} for {chat_id}", flush=True)
+            return  # ❌ No message sent to user
+
+        # Extract the correct profile data from tuple
+        profile_tuple = matched_profiles[current_index]
+
+        if isinstance(profile_tuple, tuple) and len(profile_tuple) > 0:
+            if isinstance(profile_tuple[0], dict):
+                profile_data = profile_tuple[0]  # Extract user dictionary
+            else:
+                print(f"[ERROR] Unexpected profile format: {profile_tuple[0]}", flush=True)
+                return  # ❌ No message sent to user
         else:
-            bot.send_message(chat_id, "No profile selected. Please try again.")
-    except Exception as e:
-        print(f"Error occurred: {e}", flush=True)
-        bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
+            print(f"[ERROR] Unexpected tuple format: {profile_tuple}", flush=True)
+            return  # ❌ No message sent to user
 
+        # Retrieve the matched user's chat ID
+        other_user_chat_id = profile_data.get('chat_id')
+        if not isinstance(other_user_chat_id, int):  # Ensure it's an integer
+            print(f"[ERROR] Invalid chat_id in profile_data: {profile_data}", flush=True)
+            return  # ❌ No message sent to user
+
+        print(f"[DEBUG] User {chat_id} interacting with {other_user_chat_id}", flush=True)
+
+        # Handle user actions
+        if message.text == "👍 Like":
+            handle_like(chat_id, other_user_chat_id)
+        elif message.text == "👎 Dislike":
+            display_next_profile(chat_id)  # Move to the next profile
+        elif message.text == "✍️ Write Note":
+            user_data[chat_id]['current_liked_chat_id'] = other_user_chat_id
+            bot.send_message(chat_id, "✍️ Please type your note:")
+            bot.register_next_step_handler(message, handle_note_input)
+
+    except Exception as e:
+        print(f"[ERROR] Exception in handle_text_response: {e}", flush=True)
 
 
 def handle_like(liker_chat_id, liked_chat_id):
@@ -787,30 +806,42 @@ def inline_button_handler(call):
         handle_violation(call)  # 🚩 Fix: Add Violation Handling Here
     else:
         bot.answer_callback_query(call.id, "Invalid action.")
-
 def display_next_profile(chat_id):
     try:
-        # Validate that the user has profile data
+        # Ensure user data exists
         if chat_id not in user_data or 'matched_profiles' not in user_data[chat_id]:
-            bot.send_message(chat_id, "No profiles available. Please try again later.")
-            return
+            print(f"[ERROR] No profiles available for {chat_id}", flush=True)
+            return  # ❌ No message sent
 
         matched_profiles = user_data[chat_id]['matched_profiles']
         current_index = user_data[chat_id].get('current_profile_index', -1)  # Default to -1 if not set
 
-        # Check if there are more profiles to display
+        print(f"[DEBUG] Current index before increment: {current_index} for {chat_id}", flush=True)
+
+        # Ensure there are more profiles to display
         if current_index + 1 < len(matched_profiles):
-            # Update the current index
+            # Move to the next profile
             current_index += 1
             user_data[chat_id]['current_profile_index'] = current_index
 
-            # Display the next profile
-            display_profile(chat_id, matched_profiles[current_index])
+            # Extract profile correctly (handling tuple structure)
+            profile_tuple = matched_profiles[current_index]
+            if isinstance(profile_tuple, tuple) and len(profile_tuple) > 0 and isinstance(profile_tuple[0], dict):
+                profile_data = profile_tuple[0]  # Extract user dictionary
+            else:
+                print(f"[ERROR] Unexpected profile format: {profile_tuple}", flush=True)
+                return  # ❌ No message sent
+
+            print(f"[DEBUG] Displaying profile {profile_data.get('chat_id')} to {chat_id}", flush=True)
+
+            # Display the profile
+            display_profile(chat_id, profile_data)
         else:
+            print(f"[DEBUG] No more profiles left for {chat_id}", flush=True)
             bot.send_message(chat_id, "No more profiles to display.")
+
     except Exception as e:
-        print(f"Error occurred in display_next_profile: {e}")
-        bot.send_message(chat_id, "An unexpected error occurred. Please try again later.")
+        print(f"[ERROR] Exception in display_next_profile: {e}", flush=True)
 
 
 
