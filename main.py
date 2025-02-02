@@ -14,13 +14,17 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 bot = TeleBot(API_KEY, parse_mode=None)
 
-conn = psycopg2.connect(
-    host="localhost",
-    user="postgres",       
-    password="Jj1995@idk",         
-    dbname="telegram_bot"
-)
-cursor = conn.cursor()
+
+
+DATABASE_URL = "postgresql://postgres.klcqqptwmpfkgnkxovwx:Jj1995%40idk@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
+                 
+try:
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    print("Connected to Supabase DB successfully!")
+except Exception as e:
+    print(f"Database connection error: {e}")
+
 
 user_data = {}
 pending_users = []
