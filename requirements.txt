@@ -1,10 +1,6 @@
-
----
-
-## 📦 **requirements.txt**
-```txt
-python-telegram-bot==20.0
-psycopg2-binary==2.9.9
-requests==2.31.0
-python-dotenv==1.0.0
-geopy==2.3.0
+argparse
+psycopg2-binary
+pyTelegramBotAPI
+geopy
+python-dotenv
+flask
