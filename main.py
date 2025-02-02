@@ -11,7 +11,12 @@ import threading
 import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
- 
+import keepalive
+
+
+keepalive.keep_alive()
+
+
 # Load environment variables
 load_dotenv()
 
