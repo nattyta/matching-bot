@@ -2,22 +2,27 @@ from argparse import Action
 import random
 import psycopg2
 from telebot import TeleBot
-from constant import API_KEY
 from telebot import types
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 import logging
 import datetime
 import threading
-
+import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from dotenv import load_dotenv
+ 
+# Load environment variables
+load_dotenv()
 
+# Get API Key & DB URL from .env
+API_KEY = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 bot = TeleBot(API_KEY, parse_mode=None)
 
 
 
-DATABASE_URL = "postgresql://postgres.klcqqptwmpfkgnkxovwx:Jj1995%40idk@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
-                 
+     
 try:
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
