@@ -34,7 +34,7 @@ import threading
 import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
-from keep_alive import keep_alive
+from keepalive import keep_alive
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, not_, func, desc
 
