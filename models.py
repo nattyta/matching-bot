@@ -13,7 +13,7 @@ class User(Base):
     name = Column(String(100))
     age = Column(Integer)
     gender = Column(String(1))  # 'M' or 'F'
-    location = Column(String(200))
+    location = Column(String(200))  # ADD THIS - was missing!
     photo = Column(String(500))
     interests = Column(Text)
     looking_for = Column(String(10))  # '1' for Dating, '2' for Friends
@@ -58,12 +58,15 @@ engine = None
 SessionLocal = None
 
 def init_database(database_url):
-    """Initialize database"""
+    """Initialize database - will update schema if needed"""
     global engine, SessionLocal
     
     try:
         engine = create_engine(database_url, pool_pre_ping=True)
+        
+        # This will create missing tables/columns
         Base.metadata.create_all(bind=engine)
+        
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         print("✅ Database initialized successfully")
         return True
