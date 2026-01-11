@@ -1,9 +1,9 @@
-argparse
-psycopg2-binary
-pyTelegramBotAPI
-geopy
-python-dotenv
-flask
+argparse==1.4.0
+psycopg2-binary==2.9.11
+pyTelegramBotAPI==4.29.1
+geopy==2.4.1
+python-dotenv==1.2.1
+flask==3.1.2
 sqlalchemy==2.0.30
 alembic==1.13.1
-keepalive
+keepalive==0.5
