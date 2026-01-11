@@ -1,3 +1,21 @@
+import sys
+
+# Check for required packages before importing
+required_packages = ['sqlalchemy', 'keepalive']
+missing_packages = []
+
+for package in required_packages:
+    try:
+        __import__(package)
+    except ImportError:
+        missing_packages.append(package)
+
+if missing_packages:
+    print(f"❌ Missing packages: {', '.join(missing_packages)}")
+    print("💡 Add them to requirements.txt and redeploy")
+    sys.exit(1)
+
+
 import random
 import json
 import math
