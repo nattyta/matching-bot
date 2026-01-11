@@ -4,3 +4,6 @@ pyTelegramBotAPI
 geopy
 python-dotenv
 flask
+sqlalchemy==2.0.30
+alembic==1.13.1
+keepalive
