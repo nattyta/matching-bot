@@ -34,7 +34,7 @@ import threading
 import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
-import keepalive
+from keep_alive import keep_alive
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, not_, func, desc
 
@@ -52,7 +52,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-keepalive.keep_alive()
+keep_alive()
 
 # Load environment variables
 load_dotenv()
