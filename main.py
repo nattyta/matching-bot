@@ -5,8 +5,7 @@ import time
 from datetime import datetime, timedelta
 from telebot import TeleBot, types
 from telebot.custom_filters import TextMatchFilter
-from geopy.distance import geodesic
-from geopy.geocoders import Nominatim
+from flask import Flask, request, abort
 import logging
 from logging.handlers import RotatingFileHandler
 import threading
@@ -28,54 +27,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Keep-alive using Flask
-from flask import Flask
-from threading import Thread
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 MatchMaker Bot is running!"
-
-@app.route('/health')
-def health():
-    return json.dumps({"status": "healthy", "timestamp": datetime.utcnow().isoformat()})
-
-@app.route('/metrics')
-def metrics():
-    """Simple metrics endpoint"""
-    try:
-        db: Session = next(get_db())
-        user_count = db.query(User).count()
-        active_users = db.query(User).filter(User.is_active == True).count()
-        likes_count = db.query(Like).count()
-        db.close()
-        
-        return json.dumps({
-            "users_total": user_count,
-            "users_active": active_users,
-            "likes_total": likes_count,
-            "timestamp": datetime.utcnow().isoformat()
-        })
-    except Exception as e:
-        return json.dumps({"error": str(e)}), 500
-
-def run_flask():
-    """Run Flask server for keep-alive"""
-    app.run(host='0.0.0.0', port=8080, debug=False, threaded=True)
-
-# Start Flask in background
-flask_thread = Thread(target=run_flask, daemon=True)
-flask_thread.start()
-logger.info("✅ Keep-alive server started on port 8080")
-
 # Load environment variables
 load_dotenv()
 
 # Get API Key & DB URL from .env
 API_KEY = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")
 
 if not API_KEY:
     logger.error("❌ BOT_TOKEN not found in environment variables")
@@ -84,6 +43,9 @@ if not API_KEY:
 if not DATABASE_URL:
     logger.error("❌ DATABASE_URL not found in environment variables")
     sys.exit(1)
+
+# Initialize Flask app
+app = Flask(__name__)
 
 # Initialize bot
 bot = TeleBot(API_KEY, parse_mode="HTML")
@@ -101,7 +63,6 @@ except Exception as e:
 # Global state
 user_data = {}
 active_chats = {}
-user_sessions = {}
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -122,7 +83,8 @@ def update_user_activity(chat_id):
         db: Session = next(get_db())
         user = db.query(User).filter(User.chat_id == chat_id).first()
         if user:
-            user.updated_at = datetime.utcnow()
+            # Use last_active field since that's what exists in your database
+            user.last_active = datetime.utcnow()
             db.commit()
         db.close()
     except Exception as e:
@@ -156,9 +118,9 @@ def create_user_profile(chat_id, username, name, age, gender):
             name=name,
             age=age,
             gender=gender,
-            is_active=True,
+            last_active=datetime.utcnow(),
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            is_active=True
         )
         
         db.add(user)
@@ -178,17 +140,71 @@ def get_profile_text(user):
     gender = "Male" if user.gender == 'M' else "Female"
     looking_for = "Dating 💑" if user.looking_for == '1' else "Friends 👥"
     
+    # Use the location property which handles both location_text and location_lat/lon
+    location_display = user.location if user.location else 'Not specified'
+    
     profile_text = f"""
 👤 <b>{user.name}, {user.age}</b>
 
 ⚧️ <b>Gender:</b> {gender}
-📍 <b>Location:</b> {user.location if user.location else 'Not specified'}
+📍 <b>Location:</b> {location_display}
 🎯 <b>Looking for:</b> {looking_for}
 ❤️ <b>Interests:</b> {user.interests if user.interests else 'No interests added'}
 
 <i>@{user.username if user.username else 'No username'}</i>
 """
     return profile_text
+
+def get_user_location(user):
+    """Get user location as string"""
+    if user.location_text:
+        return user.location_text
+    elif user.location_lat and user.location_lon:
+        return f"{user.location_lat}, {user.location_lon}"
+    return None
+
+def set_user_location(user, location_str):
+    """Set user location from string"""
+    user.location_text = location_str
+
+# ==================== FLASK ROUTES ====================
+
+@app.route('/')
+def home():
+    return "🤖 MatchMaker Bot is running!"
+
+@app.route('/health')
+def health():
+    try:
+        db: Session = next(get_db())
+        user_count = db.query(User).count()
+        likes_count = db.query(Like).count()
+        db.close()
+        
+        return json.dumps({
+            "status": "healthy",
+            "users_total": user_count,
+            "likes_total": likes_count,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        return json.dumps({"status": "error", "message": str(e)}), 500
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint for Telegram (production)"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = types.Update.de_json(json_string)
+        
+        # Optional: Verify secret token
+        if SECRET_TOKEN and request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
+            abort(403)
+        
+        bot.process_new_updates([update])
+        return ''
+    else:
+        abort(403)
 
 # ==================== COMMAND HANDLERS ====================
 
@@ -258,7 +274,10 @@ def my_profile_command(message):
         profile_text = "👤 <b>Your Profile</b>\n\n" + profile_text.split('\n', 1)[1]
         
         # Add last active info
-        last_active = user.updated_at.strftime('%Y-%m-%d %H:%M') if user.updated_at else 'Never'
+        if user.last_active:
+            last_active = user.last_active.strftime('%Y-%m-%d %H:%M')
+        else:
+            last_active = 'Never'
         profile_text += f"\n<i>Last active: {last_active}</i>"
         
         # Send profile with photo if available
@@ -315,10 +334,9 @@ def view_profiles_command(message):
         # Find other users based on preference
         db: Session = next(get_db())
         
-        # Base query
+        # Base query - remove the is_active filter since it doesn't exist yet
         query = db.query(User).filter(
-            User.chat_id != chat_id,
-            User.is_active == True
+            User.chat_id != chat_id
         )
         
         # Apply filters based on looking_for
@@ -331,7 +349,7 @@ def view_profiles_command(message):
         # If looking for friends, show all genders
         
         # Get users (limit to 20 for performance)
-        other_users = query.limit(20).all()
+        other_users = query.order_by(User.last_active.desc()).limit(20).all()
         db.close()
         
         if not other_users:
@@ -348,7 +366,7 @@ def view_profiles_command(message):
                 'name': u.name,
                 'age': u.age,
                 'gender': u.gender,
-                'location': u.location,
+                'location': get_user_location(u),
                 'interests': u.interests,
                 'photo': u.photo,
                 'username': u.username
@@ -398,10 +416,6 @@ def show_profile(chat_id, profile_index):
     markup.row(
         types.InlineKeyboardButton("👍 Like", callback_data=f"like_{profile['chat_id']}_{profile_index}"),
         types.InlineKeyboardButton("👎 Skip", callback_data=f"skip_{profile_index}")
-    )
-    markup.row(
-        types.InlineKeyboardButton("⚠️ Report", callback_data=f"report_{profile['chat_id']}"),
-        types.InlineKeyboardButton("💬 Chat", callback_data=f"start_chat_{profile['chat_id']}")
     )
     
     # Send profile
@@ -470,8 +484,10 @@ def handle_callback(call):
                 
                 # Notify target user if they have a profile
                 try:
-                    notification_text = f"❤️ <b>New Like!</b>\n\n{get_user(chat_id).name} liked your profile!"
-                    bot.send_message(target_id, notification_text, parse_mode="HTML")
+                    liker_user = get_user(chat_id)
+                    if liker_user:
+                        notification_text = f"❤️ <b>New Like!</b>\n\n{liker_user.name} liked your profile!"
+                        bot.send_message(target_id, notification_text, parse_mode="HTML")
                 except:
                     pass  # User might have blocked the bot
             else:
@@ -506,16 +522,6 @@ def handle_callback(call):
         elif data == "stats":
             bot.answer_callback_query(call.id)
             show_stats(chat_id)
-        
-        elif data.startswith("report_"):
-            target_id = int(data.split("_")[1])
-            bot.answer_callback_query(call.id)
-            start_report(chat_id, target_id)
-        
-        elif data.startswith("start_chat_"):
-            target_id = int(data.split("_")[2])
-            bot.answer_callback_query(call.id)
-            start_private_chat(chat_id, target_id)
             
     except Exception as e:
         logger.error(f"Error in callback handler: {e}")
@@ -588,7 +594,7 @@ def process_name_edit(message):
         user = db.query(User).filter(User.chat_id == chat_id).first()
         if user:
             user.name = new_name
-            user.updated_at = datetime.utcnow()
+            user.last_active = datetime.utcnow()
             db.commit()
             bot.send_message(chat_id, f"✅ Name updated to: {new_name}")
         db.close()
@@ -607,7 +613,7 @@ def process_age_edit(message):
                 user = db.query(User).filter(User.chat_id == chat_id).first()
                 if user:
                     user.age = age
-                    user.updated_at = datetime.utcnow()
+                    user.last_active = datetime.utcnow()
                     db.commit()
                     bot.send_message(chat_id, f"✅ Age updated to: {age}")
                 db.close()
@@ -637,7 +643,7 @@ def process_gender_edit(message):
         user = db.query(User).filter(User.chat_id == chat_id).first()
         if user:
             user.gender = gender
-            user.updated_at = datetime.utcnow()
+            user.last_active = datetime.utcnow()
             db.commit()
             bot.send_message(chat_id, f"✅ Gender updated")
         db.close()
@@ -665,8 +671,9 @@ def process_location_edit(message):
         db: Session = next(get_db())
         user = db.query(User).filter(User.chat_id == chat_id).first()
         if user:
-            user.location = location_str
-            user.updated_at = datetime.utcnow()
+            # Store in location_text field
+            user.location_text = location_str
+            user.last_active = datetime.utcnow()
             db.commit()
             bot.send_message(chat_id, f"✅ Location updated")
         db.close()
@@ -688,7 +695,7 @@ def process_interests_edit(message):
         user = db.query(User).filter(User.chat_id == chat_id).first()
         if user:
             user.interests = interests
-            user.updated_at = datetime.utcnow()
+            user.last_active = datetime.utcnow()
             db.commit()
             bot.send_message(chat_id, f"✅ Interests updated")
         db.close()
@@ -706,7 +713,7 @@ def process_photo_edit(message):
             user = db.query(User).filter(User.chat_id == chat_id).first()
             if user:
                 user.photo = message.photo[-1].file_id
-                user.updated_at = datetime.utcnow()
+                user.last_active = datetime.utcnow()
                 db.commit()
                 bot.send_message(chat_id, "✅ Profile photo updated!")
             db.close()
@@ -734,7 +741,7 @@ def process_looking_for_edit(message):
         user = db.query(User).filter(User.chat_id == chat_id).first()
         if user:
             user.looking_for = looking_for
-            user.updated_at = datetime.utcnow()
+            user.last_active = datetime.utcnow()
             db.commit()
             bot.send_message(chat_id, f"✅ Updated what you're looking for")
         db.close()
@@ -746,34 +753,6 @@ def process_looking_for_edit(message):
 @bot.message_handler(commands=['edit_profile'])
 def edit_profile_command(message):
     start_profile_edit(message.chat.id)
-
-@bot.message_handler(commands=['random'])
-def random_chat_command(message):
-    chat_id = message.chat.id
-    
-    if is_banned(chat_id):
-        bot.send_message(chat_id, "❌ You have been banned from using this bot.")
-        return
-    
-    if chat_id in active_chats:
-        bot.send_message(chat_id, "You're already in a chat! Type /end to exit.")
-        return
-    
-    markup = types.InlineKeyboardMarkup(row_width=3)
-    markup.add(
-        types.InlineKeyboardButton("👨 Male", callback_data="random_male"),
-        types.InlineKeyboardButton("👩 Female", callback_data="random_female"),
-        types.InlineKeyboardButton("👥 Any", callback_data="random_any")
-    )
-    
-    bot.send_message(chat_id,
-        "💬 <b>Random Chat</b>\n\n"
-        "Who would you like to chat with?\n"
-        "You'll be matched with someone looking for a chat.",
-        reply_markup=markup,
-        parse_mode="HTML")
-    
-    update_user_activity(chat_id)
 
 @bot.message_handler(commands=['matches'])
 def matches_command(message):
@@ -799,7 +778,7 @@ def view_matches(chat_id):
             
             if mutual_like:
                 user = db.query(User).filter(User.chat_id == liked_id).first()
-                if user and user.is_active:
+                if user:
                     mutual_matches.append(user)
         
         db.close()
@@ -861,7 +840,7 @@ def view_likes_command(message):
         
         for like in likes:
             user = db.query(User).filter(User.chat_id == like.liker_chat_id).first()
-            if user and user.is_active:
+            if user:
                 like_text = f"""
 ❤️ <b>New Like!</b>
 
@@ -875,10 +854,6 @@ def view_likes_command(message):
                     types.InlineKeyboardButton("👁️ View Profile", callback_data=f"view_full_{user.chat_id}"),
                     types.InlineKeyboardButton("👍 Like Back", callback_data=f"like_back_{user.chat_id}")
                 )
-                markup.row(
-                    types.InlineKeyboardButton("💬 Chat", callback_data=f"start_chat_{user.chat_id}"),
-                    types.InlineKeyboardButton("👎 Skip", callback_data=f"skip_like_{user.chat_id}")
-                )
                 
                 if user.photo:
                     bot.send_photo(chat_id, user.photo, caption=like_text, reply_markup=markup, parse_mode="HTML")
@@ -891,136 +866,6 @@ def view_likes_command(message):
     except Exception as e:
         logger.error(f"Error in view_likes: {e}")
         bot.send_message(chat_id, "❌ An error occurred")
-
-@bot.message_handler(commands=['community'])
-def community_command(message):
-    chat_id = message.chat.id
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("➕ Create", callback_data="create_community"),
-        types.InlineKeyboardButton("👥 Browse", callback_data="browse_communities")
-    )
-    
-    bot.send_message(chat_id,
-        "👥 <b>Communities</b>\n\n"
-        "Join or create interest-based communities!\n\n"
-        "<i>Feature coming soon! 🚀</i>",
-        reply_markup=markup,
-        parse_mode="HTML")
-    
-    update_user_activity(chat_id)
-
-@bot.message_handler(commands=['settings'])
-def settings_command(message):
-    show_settings(message.chat.id)
-
-def show_settings(chat_id):
-    """Show bot settings"""
-    markup = types.InlineKeyboardMarkup()
-    markup.row(
-        types.InlineKeyboardButton("🔔 Notifications", callback_data="settings_notifications"),
-        types.InlineKeyboardButton("🔒 Privacy", callback_data="settings_privacy")
-    )
-    markup.row(
-        types.InlineKeyboardButton("🗑️ Delete Account", callback_data="settings_delete"),
-        types.InlineKeyboardButton("📋 Profile Visibility", callback_data="settings_visibility")
-    )
-    markup.row(
-        types.InlineKeyboardButton("🔙 Back", callback_data="back_to_profile")
-    )
-    
-    bot.send_message(chat_id,
-        "⚙️ <b>Settings</b>\n\n"
-        "Configure your bot settings:",
-        reply_markup=markup,
-        parse_mode="HTML")
-
-def show_stats(chat_id):
-    """Show user statistics"""
-    try:
-        db: Session = next(get_db())
-        
-        # Get user stats
-        likes_given = db.query(Like).filter(Like.liker_chat_id == chat_id).count()
-        likes_received = db.query(Like).filter(Like.liked_chat_id == chat_id).count()
-        
-        # Get mutual matches count
-        user_likes = db.query(Like).filter(Like.liker_chat_id == chat_id).all()
-        liked_ids = [like.liked_chat_id for like in user_likes]
-        mutual_count = 0
-        for liked_id in liked_ids:
-            mutual_like = db.query(Like).filter(
-                Like.liker_chat_id == liked_id,
-                Like.liked_chat_id == chat_id
-            ).first()
-            if mutual_like:
-                mutual_count += 1
-        
-        db.close()
-        
-        stats_text = f"""
-📊 <b>Your Statistics</b>
-
-❤️ <b>Likes Given:</b> {likes_given}
-💖 <b>Likes Received:</b> {likes_received}
-💞 <b>Mutual Matches:</b> {mutual_count}
-👥 <b>Active Chats:</b> {len([k for k, v in active_chats.items() if v == chat_id])}
-
-<i>Keep connecting! 🚀</i>
-"""
-        
-        bot.send_message(chat_id, stats_text, parse_mode="HTML")
-        
-    except Exception as e:
-        logger.error(f"Error showing stats: {e}")
-        bot.send_message(chat_id, "❌ Could not load statistics")
-
-def start_report(chat_id, reported_id):
-    """Start report process"""
-    user_data[chat_id] = {'reporting': reported_id}
-    
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.row("🚫 Harassment", "📸 Inappropriate Photo")
-    markup.row("👤 Fake Profile", "💰 Scam")
-    markup.row("📝 Other", "🔙 Cancel")
-    
-    bot.send_message(chat_id,
-        "⚠️ <b>Report User</b>\n\n"
-        "Please select the violation type:",
-        reply_markup=markup,
-        parse_mode="HTML")
-
-def start_private_chat(chat_id, target_id):
-    """Start private chat between two users"""
-    if chat_id in active_chats:
-        bot.send_message(chat_id, "❌ You're already in a chat. Type /end to exit first.")
-        return
-    
-    # Check if target is available
-    if target_id in active_chats:
-        bot.send_message(chat_id, "❌ User is currently in another chat.")
-        return
-    
-    # Start chat
-    active_chats[chat_id] = target_id
-    active_chats[target_id] = chat_id
-    
-    # Send notifications
-    try:
-        target_user = get_user(target_id)
-        if target_user:
-            bot.send_message(chat_id, f"💬 <b>Chat started with {target_user.name}!</b>\n\nType /end to end the chat.", parse_mode="HTML")
-            bot.send_message(target_id, f"💬 <b>{get_user(chat_id).name} started a chat with you!</b>\n\nType /end to end the chat.", parse_mode="HTML")
-        else:
-            bot.send_message(chat_id, "❌ Could not start chat. User not found.")
-            active_chats.pop(chat_id, None)
-            active_chats.pop(target_id, None)
-    except Exception as e:
-        logger.error(f"Error starting chat: {e}")
-        active_chats.pop(chat_id, None)
-        active_chats.pop(target_id, None)
-        bot.send_message(chat_id, "❌ Could not start chat.")
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
@@ -1038,11 +883,6 @@ def handle_text(message):
         random_chat_command(message)
     elif text.lower() == '/end' and chat_id in active_chats:
         end_chat(chat_id)
-    elif text == "🔙 Cancel" and chat_id in user_data and 'reporting' in user_data[chat_id]:
-        user_data[chat_id].pop('reporting', None)
-        bot.send_message(chat_id, "✅ Report cancelled.", reply_markup=types.ReplyKeyboardRemove())
-    elif text in ["🚫 Harassment", "📸 Inappropriate Photo", "👤 Fake Profile", "💰 Scam", "📝 Other"]:
-        handle_report_type(message)
     else:
         # Check if in active chat
         if chat_id in active_chats:
@@ -1051,77 +891,6 @@ def handle_text(message):
             bot.send_message(chat_id, 
                 "I didn't understand that. Use /help to see available commands.",
                 reply_markup=types.ReplyKeyboardRemove())
-
-def handle_report_type(message):
-    """Handle report type selection"""
-    chat_id = message.chat.id
-    
-    if chat_id not in user_data or 'reporting' not in user_data[chat_id]:
-        bot.send_message(chat_id, "❌ Report session expired.")
-        return
-    
-    reported_id = user_data[chat_id]['reporting']
-    violation = message.text
-    
-    # Store report type and ask for description
-    user_data[chat_id]['report_type'] = violation
-    user_data[chat_id]['report_step'] = 'description'
-    
-    bot.send_message(chat_id,
-        "📝 <b>Report Description</b>\n\n"
-        "Please describe the violation in detail:",
-        parse_mode="HTML")
-
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    chat_id = message.chat.id
-    
-    update_user_activity(chat_id)
-    
-    # Check if this is for profile photo during edit
-    if chat_id in user_data and user_data[chat_id].get('expecting_photo'):
-        try:
-            db: Session = next(get_db())
-            user = db.query(User).filter(User.chat_id == chat_id).first()
-            if user:
-                user.photo = message.photo[-1].file_id
-                user.updated_at = datetime.utcnow()
-                db.commit()
-                bot.send_message(chat_id, "✅ Profile photo updated!")
-            db.close()
-        except Exception as e:
-            logger.error(f"Error updating photo: {e}")
-            bot.send_message(chat_id, "❌ Failed to update photo")
-        
-        if chat_id in user_data:
-            user_data[chat_id].pop('expecting_photo', None)
-    
-    # Check if in active chat
-    elif chat_id in active_chats:
-        partner_id = active_chats[chat_id]
-        try:
-            bot.send_photo(partner_id, message.photo[-1].file_id)
-        except:
-            bot.send_message(chat_id, "❌ Could not send photo")
-
-@bot.message_handler(content_types=['location'])
-def handle_location(message):
-    chat_id = message.chat.id
-    location = message.location
-    
-    try:
-        db: Session = next(get_db())
-        user = db.query(User).filter(User.chat_id == chat_id).first()
-        if user:
-            user.location = f"{location.latitude:.6f}, {location.longitude:.6f}"
-            user.updated_at = datetime.utcnow()
-            db.commit()
-            bot.send_message(chat_id, "✅ Location updated!")
-        db.close()
-        update_user_activity(chat_id)
-    except Exception as e:
-        logger.error(f"Error updating location: {e}")
-        bot.send_message(chat_id, "❌ Failed to update location")
 
 def start_profile_setup(message):
     chat_id = message.chat.id
@@ -1169,62 +938,6 @@ def end_chat(user_id):
         bot.send_message(user_id, "💬 Chat ended.")
         if partner_id:
             bot.send_message(partner_id, "💬 Chat ended.")
-        
-        # Save chat session to database
-        try:
-            db: Session = next(get_db())
-            session = ChatSession(
-                user1_id=min(user_id, partner_id),
-                user2_id=max(user_id, partner_id),
-                started_at=datetime.utcnow() - timedelta(minutes=5),  # Approximate
-                ended_at=datetime.utcnow()
-            )
-            db.add(session)
-            db.commit()
-            db.close()
-        except Exception as e:
-            logger.error(f"Error saving chat session: {e}")
-
-def cleanup_inactive_users():
-    """Clean up inactive users and chats periodically"""
-    while True:
-        try:
-            # Clean up inactive chats (more than 30 minutes)
-            now = datetime.utcnow()
-            to_remove = []
-            for user_id, partner_id in list(active_chats.items()):
-                # This is a simple approach - in production, track chat start time
-                to_remove.append(user_id)
-            
-            for user_id in to_remove:
-                end_chat(user_id)
-            
-            # Mark inactive users (inactive for 7 days)
-            db: Session = next(get_db())
-            cutoff = now - timedelta(days=7)
-            inactive_users = db.query(User).filter(
-                User.updated_at < cutoff,
-                User.is_active == True
-            ).limit(100).all()
-            
-            for user in inactive_users:
-                user.is_active = False
-                logger.info(f"Marked user {user.chat_id} as inactive")
-            
-            db.commit()
-            db.close()
-            
-            logger.info("✅ Cleanup completed")
-            
-        except Exception as e:
-            logger.error(f"Error in cleanup: {e}")
-        
-        # Run every hour
-        time.sleep(3600)
-
-# Start cleanup thread
-cleanup_thread = threading.Thread(target=cleanup_inactive_users, daemon=True)
-cleanup_thread.start()
 
 # Start the bot
 if __name__ == '__main__':
