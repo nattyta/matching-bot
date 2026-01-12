@@ -4,6 +4,8 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 import logging
 
+logger = logging.getLogger(__name__)
+
 Base = declarative_base()
 
 class User(Base):
@@ -87,35 +89,127 @@ def init_database(database_url):
         # Create engine with connection pooling
         engine = create_engine(
             database_url,
-            pool_size=20,
-            max_overflow=30,
+            pool_size=10,
+            max_overflow=20,
             pool_pre_ping=True,
             pool_recycle=3600,
-            echo=False  # Set to True for debugging SQL queries
+            echo=False
         )
         
-        # Create all tables
-        Base.metadata.create_all(bind=engine)
+        logger.info("🔄 Creating/updating database tables...")
         
-        # Create indexes if they don't exist
+        # Create all tables first
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Base tables created")
+        
+        # Check for missing columns and add them
+        inspector = inspect(engine)
+        
+        # Check users table for missing columns
+        if inspector.has_table('users'):
+            existing_columns = [col['name'] for col in inspector.get_columns('users')]
+            logger.info(f"📊 Existing columns in users: {existing_columns}")
+            
+            # Get expected columns from User model
+            expected_columns = [column.name for column in User.__table__.columns]
+            logger.info(f"📋 Expected columns: {expected_columns}")
+            
+            # Find missing columns
+            missing_columns = [col for col in expected_columns if col not in existing_columns]
+            
+            if missing_columns:
+                logger.info(f"🔄 Adding missing columns to users table: {missing_columns}")
+                
+                with engine.begin() as conn:
+                    for column_name in missing_columns:
+                        column = getattr(User.__table__.c, column_name)
+                        column_type = column.type.compile(engine.dialect)
+                        
+                        # Get default value if specified
+                        default_value = ""
+                        if column.default is not None:
+                            if hasattr(column.default, 'arg'):
+                                if column.default.arg is True:
+                                    default_value = " DEFAULT TRUE"
+                                elif column.default.arg is False:
+                                    default_value = " DEFAULT FALSE"
+                                elif column.default.arg == datetime.utcnow:
+                                    default_value = " DEFAULT CURRENT_TIMESTAMP"
+                                else:
+                                    default_value = f" DEFAULT '{column.default.arg}'"
+                        
+                        # Handle different column types
+                        if isinstance(column.type, String):
+                            max_length = column.type.length
+                            sql = f"ALTER TABLE users ADD COLUMN {column_name} VARCHAR({max_length}){default_value}"
+                        elif isinstance(column.type, Integer):
+                            sql = f"ALTER TABLE users ADD COLUMN {column_name} INTEGER{default_value}"
+                        elif isinstance(column.type, Text):
+                            sql = f"ALTER TABLE users ADD COLUMN {column_name} TEXT{default_value}"
+                        elif isinstance(column.type, DateTime):
+                            sql = f"ALTER TABLE users ADD COLUMN {column_name} TIMESTAMP{default_value}"
+                        elif isinstance(column.type, Boolean):
+                            sql = f"ALTER TABLE users ADD COLUMN {column_name} BOOLEAN{default_value}"
+                        else:
+                            # Default to TEXT for unknown types
+                            sql = f"ALTER TABLE users ADD COLUMN {column_name} TEXT{default_value}"
+                        
+                        try:
+                            conn.execute(text(sql))
+                            logger.info(f"✅ Added column: {column_name}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Could not add column {column_name}: {e}")
+        
+        # Now create indexes safely
         with engine.begin() as conn:
             # Create composite index for faster mutual like queries
-            conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_likes_mutual 
-                ON likes (liker_chat_id, liked_chat_id, timestamp)
-            """))
+            try:
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_likes_mutual 
+                    ON likes (liker_chat_id, liked_chat_id, timestamp)
+                """))
+                logger.info("✅ Created idx_likes_mutual index")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not create idx_likes_mutual index: {e}")
             
-            # Create index for user activity
-            conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_users_activity 
-                ON users (is_active, looking_for, gender)
-            """))
+            # Create index for user activity - only if columns exist
+            try:
+                # First check if columns exist
+                result = conn.execute(text("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'users' 
+                    AND column_name IN ('is_active', 'looking_for', 'gender')
+                """)).fetchall()
+                
+                existing_columns = [row[0] for row in result]
+                if all(col in existing_columns for col in ['is_active', 'looking_for', 'gender']):
+                    conn.execute(text("""
+                        CREATE INDEX IF NOT EXISTS idx_users_activity 
+                        ON users (is_active, looking_for, gender)
+                    """))
+                    logger.info("✅ Created idx_users_activity index")
+                else:
+                    logger.warning("⚠️ Skipping idx_users_activity index - required columns missing")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not create idx_users_activity index: {e}")
+            
+            # Create index for faster user lookups
+            try:
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_users_active 
+                    ON users (is_active)
+                """))
+                logger.info("✅ Created idx_users_active index")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not create idx_users_active index: {e}")
         
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        logger.info("✅ Database initialized successfully")
         return True
         
     except Exception as e:
-        logging.error(f"Database initialization failed: {e}")
+        logger.error(f"❌ Database initialization failed: {e}")
         return False
 
 def get_db():
