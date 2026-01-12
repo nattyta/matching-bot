@@ -16,13 +16,32 @@ class User(Base):
     name = Column(String(100))
     age = Column(Integer)
     gender = Column(String(1))  # 'M' or 'F'
-    location = Column(String(200))
+    location_lat = Column(String(50))  # Match your existing schema
+    location_lon = Column(String(50))  # Match your existing schema
+    location_text = Column(String(200))  # Match your existing schema
     photo = Column(String(500))
     interests = Column(Text)
     looking_for = Column(String(10))  # '1' for Dating, '2' for Friends
+    last_active = Column(DateTime)  # Match your existing schema
+    match_score_cache = Column(Integer)  # Match your existing schema
+    
+    # New columns we want to add
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    
+    @property
+    def location(self):
+        """Compatibility property to get location as a string"""
+        if self.location_text:
+            return self.location_text
+        elif self.location_lat and self.location_lon:
+            return f"{self.location_lat}, {self.location_lon}"
+        return None
+    
+    @location.setter
+    def location(self, value):
+        """Compatibility setter for location"""
+        self.location_text = value
 
 class Like(Base):
     __tablename__ = 'likes'
@@ -36,11 +55,8 @@ class Like(Base):
 class BannedUser(Base):
     __tablename__ = 'banned_users'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, unique=True, index=True)
-    reason = Column(Text)
-    banned_at = Column(DateTime, default=datetime.utcnow)
-    banned_by = Column(Integer)
+    # Match your existing schema - just user_id as primary key
+    user_id = Column(Integer, primary_key=True)
 
 class Report(Base):
     __tablename__ = 'reports'
@@ -98,111 +114,12 @@ def init_database(database_url):
         
         logger.info("🔄 Creating/updating database tables...")
         
-        # Create all tables first
+        # Create all tables first (new tables will be created, existing ones won't be modified)
         Base.metadata.create_all(bind=engine)
         logger.info("✅ Base tables created")
         
-        # Check for missing columns and add them
-        inspector = inspect(engine)
-        
-        # Check users table for missing columns
-        if inspector.has_table('users'):
-            existing_columns = [col['name'] for col in inspector.get_columns('users')]
-            logger.info(f"📊 Existing columns in users: {existing_columns}")
-            
-            # Get expected columns from User model
-            expected_columns = [column.name for column in User.__table__.columns]
-            logger.info(f"📋 Expected columns: {expected_columns}")
-            
-            # Find missing columns
-            missing_columns = [col for col in expected_columns if col not in existing_columns]
-            
-            if missing_columns:
-                logger.info(f"🔄 Adding missing columns to users table: {missing_columns}")
-                
-                with engine.begin() as conn:
-                    for column_name in missing_columns:
-                        column = getattr(User.__table__.c, column_name)
-                        column_type = column.type.compile(engine.dialect)
-                        
-                        # Get default value if specified
-                        default_value = ""
-                        if column.default is not None:
-                            if hasattr(column.default, 'arg'):
-                                if column.default.arg is True:
-                                    default_value = " DEFAULT TRUE"
-                                elif column.default.arg is False:
-                                    default_value = " DEFAULT FALSE"
-                                elif column.default.arg == datetime.utcnow:
-                                    default_value = " DEFAULT CURRENT_TIMESTAMP"
-                                else:
-                                    default_value = f" DEFAULT '{column.default.arg}'"
-                        
-                        # Handle different column types
-                        if isinstance(column.type, String):
-                            max_length = column.type.length
-                            sql = f"ALTER TABLE users ADD COLUMN {column_name} VARCHAR({max_length}){default_value}"
-                        elif isinstance(column.type, Integer):
-                            sql = f"ALTER TABLE users ADD COLUMN {column_name} INTEGER{default_value}"
-                        elif isinstance(column.type, Text):
-                            sql = f"ALTER TABLE users ADD COLUMN {column_name} TEXT{default_value}"
-                        elif isinstance(column.type, DateTime):
-                            sql = f"ALTER TABLE users ADD COLUMN {column_name} TIMESTAMP{default_value}"
-                        elif isinstance(column.type, Boolean):
-                            sql = f"ALTER TABLE users ADD COLUMN {column_name} BOOLEAN{default_value}"
-                        else:
-                            # Default to TEXT for unknown types
-                            sql = f"ALTER TABLE users ADD COLUMN {column_name} TEXT{default_value}"
-                        
-                        try:
-                            conn.execute(text(sql))
-                            logger.info(f"✅ Added column: {column_name}")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Could not add column {column_name}: {e}")
-        
-        # Now create indexes safely
-        with engine.begin() as conn:
-            # Create composite index for faster mutual like queries
-            try:
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_likes_mutual 
-                    ON likes (liker_chat_id, liked_chat_id, timestamp)
-                """))
-                logger.info("✅ Created idx_likes_mutual index")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not create idx_likes_mutual index: {e}")
-            
-            # Create index for user activity - only if columns exist
-            try:
-                # First check if columns exist
-                result = conn.execute(text("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = 'users' 
-                    AND column_name IN ('is_active', 'looking_for', 'gender')
-                """)).fetchall()
-                
-                existing_columns = [row[0] for row in result]
-                if all(col in existing_columns for col in ['is_active', 'looking_for', 'gender']):
-                    conn.execute(text("""
-                        CREATE INDEX IF NOT EXISTS idx_users_activity 
-                        ON users (is_active, looking_for, gender)
-                    """))
-                    logger.info("✅ Created idx_users_activity index")
-                else:
-                    logger.warning("⚠️ Skipping idx_users_activity index - required columns missing")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not create idx_users_activity index: {e}")
-            
-            # Create index for faster user lookups
-            try:
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_users_active 
-                    ON users (is_active)
-                """))
-                logger.info("✅ Created idx_users_active index")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not create idx_users_active index: {e}")
+        # Don't try to add columns - just accept the existing schema
+        # Instead, update the model to work with existing schema
         
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("✅ Database initialized successfully")
