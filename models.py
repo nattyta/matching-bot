@@ -68,6 +68,28 @@ def init_database(database_url):
     try:
         logger.info("🔧 Creating database engine...")
         
+        # Check if URL needs .render.com suffix
+        if "dpg-" in database_url and "render.com" not in database_url:
+            # Try to fix the hostname
+            parts = database_url.split('@')
+            if len(parts) == 2:
+                host_part = parts[1].split('/')[0]
+                if '.' not in host_part:  # Hostname doesn't have domain
+                    # Add the .render.com domain
+                    fixed_host = f"{host_part}.oregon-postgres.render.com"
+                    database_url = database_url.replace(host_part, fixed_host)
+                    logger.info(f"Fixed hostname to: {fixed_host}")
+        
+        # Add SSL mode if not present
+        if database_url.startswith("postgresql://"):
+            if "sslmode" not in database_url.lower():
+                if "?" in database_url:
+                    database_url += "&sslmode=require"
+                else:
+                    database_url += "?sslmode=require"
+        
+        logger.info(f"Connecting with URL: {database_url.split('@')[0]}@*****")
+        
         # Create engine
         engine = create_engine(
             database_url,
@@ -103,6 +125,7 @@ def init_database(database_url):
         
     except Exception as e:
         logger.error(f"❌ Database initialization failed: {e}")
+        logger.error(f"Database URL used: {database_url if 'postgresql' in str(database_url) else 'URL masked for security'}")
         return False
 
 def get_db():
