@@ -1,7 +1,7 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, inspect
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Float, inspect
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime
+from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime, timedelta
 import logging
 import ssl
 
@@ -17,12 +17,14 @@ class User(Base):
     name = Column(String(100))
     age = Column(Integer)
     gender = Column(String(1))  # 'M' or 'F'
-    location = Column(String(200))
+    location_lat = Column(Float, nullable=True)
+    location_lon = Column(Float, nullable=True)
+    location_text = Column(String(200))
     photo = Column(String(500))
     interests = Column(Text)
     looking_for = Column(String(10))  # '1' for Dating, '2' for Friends
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_active = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
 
 class Like(Base):
@@ -37,6 +39,8 @@ class BannedUser(Base):
     __tablename__ = 'banned_users'
     
     user_id = Column(Integer, primary_key=True)
+    reason = Column(Text, nullable=True)
+    banned_at = Column(DateTime, default=datetime.utcnow)
 
 class Report(Base):
     __tablename__ = 'reports'
@@ -45,7 +49,7 @@ class Report(Base):
     reporter_chat_id = Column(Integer)
     reported_chat_id = Column(Integer)
     violation = Column(String(50))
-    description = Column(Text)
+    description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Group(Base):
@@ -58,6 +62,41 @@ class Group(Base):
     invite_link = Column(String(500))
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by = Column(Integer)
+
+# NEW MODELS THAT WERE MISSING:
+
+class RandomChatQueue(Base):
+    __tablename__ = 'random_chat_queue'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(Integer, unique=True)
+    gender_preference = Column(String(10))  # 'male', 'female', 'any'
+    looking_for = Column(String(10))  # '1' for Dating, '2' for Friends
+    joined_at = Column(DateTime, default=datetime.utcnow)
+
+class UserState(Base):
+    __tablename__ = 'user_states'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(Integer, unique=True)
+    state_data = Column(Text)  # JSON string
+    current_state = Column(String(50))
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class SeenProfile(Base):
+    __tablename__ = 'seen_profiles'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    viewer_chat_id = Column(Integer)
+    profile_chat_id = Column(Integer)
+    liked = Column(Boolean, default=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        # Ensure a user doesn't see the same profile multiple times in searches
+        # (though they might via different features)
+        # This index helps with quick lookups
+    )
 
 # Database setup
 engine = None
@@ -127,3 +166,25 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def cleanup_old_queue_entries():
+    """Clean up old random chat queue entries (older than 30 minutes)"""
+    try:
+        if SessionLocal is None:
+            return
+            
+        db = SessionLocal()
+        cutoff_time = datetime.utcnow() - timedelta(minutes=30)
+        
+        deleted_count = db.query(RandomChatQueue).filter(
+            RandomChatQueue.joined_at < cutoff_time
+        ).delete()
+        
+        db.commit()
+        db.close()
+        
+        if deleted_count > 0:
+            logger.info(f"Cleaned up {deleted_count} old queue entries")
+            
+    except Exception as e:
+        logger.error(f"Error cleaning up old queue entries: {e}")
