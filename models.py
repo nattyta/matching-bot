@@ -1,9 +1,8 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Float, inspect
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, inspect
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
-from datetime import datetime, timedelta
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
 import logging
-import ssl
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +16,11 @@ class User(Base):
     name = Column(String(100))
     age = Column(Integer)
     gender = Column(String(1))  # 'M' or 'F'
-    location_lat = Column(Float, nullable=True)
-    location_lon = Column(Float, nullable=True)
-    location_text = Column(String(200))
+    location = Column(String(200))  # Note: single location field for old code
     photo = Column(String(500))
     interests = Column(Text)
     looking_for = Column(String(10))  # '1' for Dating, '2' for Friends
     created_at = Column(DateTime, default=datetime.utcnow)
-    last_active = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=True)
 
 class Like(Base):
     __tablename__ = 'likes'
@@ -34,13 +29,12 @@ class Like(Base):
     liker_chat_id = Column(Integer)
     liked_chat_id = Column(Integer)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    note = Column(Text, nullable=True)  # Added note field for old code
 
 class BannedUser(Base):
     __tablename__ = 'banned_users'
     
     user_id = Column(Integer, primary_key=True)
-    reason = Column(Text, nullable=True)
-    banned_at = Column(DateTime, default=datetime.utcnow)
 
 class Report(Base):
     __tablename__ = 'reports'
@@ -61,42 +55,7 @@ class Group(Base):
     photo = Column(String(500))
     invite_link = Column(String(500))
     created_at = Column(DateTime, default=datetime.utcnow)
-    created_by = Column(Integer)
-
-# NEW MODELS THAT WERE MISSING:
-
-class RandomChatQueue(Base):
-    __tablename__ = 'random_chat_queue'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    chat_id = Column(Integer, unique=True)
-    gender_preference = Column(String(10))  # 'male', 'female', 'any'
-    looking_for = Column(String(10))  # '1' for Dating, '2' for Friends
-    joined_at = Column(DateTime, default=datetime.utcnow)
-
-class UserState(Base):
-    __tablename__ = 'user_states'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    chat_id = Column(Integer, unique=True)
-    state_data = Column(Text)  # JSON string
-    current_state = Column(String(50))
-    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-class SeenProfile(Base):
-    __tablename__ = 'seen_profiles'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    viewer_chat_id = Column(Integer)
-    profile_chat_id = Column(Integer)
-    liked = Column(Boolean, default=False)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    
-    __table_args__ = (
-        # Ensure a user doesn't see the same profile multiple times in searches
-        # (though they might via different features)
-        # This index helps with quick lookups
-    )
+    created_by = Column(Integer, nullable=True)
 
 # Database setup
 engine = None
@@ -107,29 +66,19 @@ def init_database(database_url):
     global engine, SessionLocal
     
     try:
-        # Render PostgreSQL requires SSL and specific connection settings
-        # Create a modified connection string with SSL parameters
-        if database_url.startswith("postgresql://"):
-            # For Render PostgreSQL, we need to add SSL mode
-            if "sslmode" not in database_url.lower():
-                if "?" in database_url:
-                    database_url += "&sslmode=require"
-                else:
-                    database_url += "?sslmode=require"
+        logger.info("🔧 Creating database engine...")
         
-        logger.info("🔧 Creating database engine with SSL...")
-        
-        # Create engine with SSL context and retry settings
+        # Create engine
         engine = create_engine(
             database_url,
-            pool_size=5,  # Small pool size
+            pool_size=5,
             max_overflow=10,
-            pool_pre_ping=True,  # Verify connections before using
-            pool_recycle=300,  # Recycle connections every 5 minutes
-            pool_timeout=30,  # Wait 30 seconds for a connection
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=30,
             echo=False,
             connect_args={
-                'connect_timeout': 10,  # 10 second timeout
+                'connect_timeout': 10,
                 'keepalives': 1,
                 'keepalives_idle': 30,
                 'keepalives_interval': 10,
@@ -137,7 +86,7 @@ def init_database(database_url):
             }
         )
         
-        # Test connection first
+        # Test connection
         logger.info("🔄 Testing database connection...")
         with engine.connect() as conn:
             conn.execute("SELECT 1")
@@ -166,25 +115,3 @@ def get_db():
         yield db
     finally:
         db.close()
-
-def cleanup_old_queue_entries():
-    """Clean up old random chat queue entries (older than 30 minutes)"""
-    try:
-        if SessionLocal is None:
-            return
-            
-        db = SessionLocal()
-        cutoff_time = datetime.utcnow() - timedelta(minutes=30)
-        
-        deleted_count = db.query(RandomChatQueue).filter(
-            RandomChatQueue.joined_at < cutoff_time
-        ).delete()
-        
-        db.commit()
-        db.close()
-        
-        if deleted_count > 0:
-            logger.info(f"Cleaned up {deleted_count} old queue entries")
-            
-    except Exception as e:
-        logger.error(f"Error cleaning up old queue entries: {e}")
