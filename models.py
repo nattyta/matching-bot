@@ -67,8 +67,14 @@ def init_database(database_url):
     try:
         logger.info("🔧 Initializing database...")
         
+        if not database_url:
+            logger.error("❌ DATABASE_URL is empty")
+            return False
+            
+        logger.info(f"Original DATABASE_URL: {database_url[:50]}...")
+        
         # Fix common Render PostgreSQL issues
-        if database_url and "postgresql://" in database_url:
+        if "postgresql://" in database_url:
             # Ensure SSL mode is set
             if "sslmode" not in database_url:
                 if "?" in database_url:
@@ -76,19 +82,32 @@ def init_database(database_url):
                 else:
                     database_url += "?sslmode=require"
             
-            # Fix missing .render.com domain
-            if "@dpg-" in database_url and ".render.com" not in database_url:
-                # Find the host part and add domain
-                import re
-                match = re.search(r'@(dpg-[a-z0-9]+)', database_url)
+            # Check if hostname needs fixing - Render format: dpg-xxxxxxxxxxxx-a
+            # We need to capture the FULL hostname including the -a, -b, etc suffix
+            import re
+            
+            # Look for patterns like @dpg-xxxxxxx-a/ or @dpg-xxxxxxx-a?
+            # The pattern should capture the entire hostname including the suffix
+            pattern1 = r'@(dpg-[a-z0-9]+-[a-z])($|/|\?)'  # Matches @dpg-xxxxxxx-a followed by end, /, or ?
+            pattern2 = r'@(dpg-[a-z0-9]+)($|/|\?)'  # Matches @dpg-xxxxxxx followed by end, /, or ?
+            
+            match = None
+            for pattern in [pattern1, pattern2]:
+                match = re.search(pattern, database_url)
                 if match:
-                    host = match.group(1)
-                    database_url = database_url.replace(f"@{host}", f"@{host}.oregon-postgres.render.com")
-                    logger.info(f"Fixed database hostname")
+                    break
+            
+            if match and ".render.com" not in database_url:
+                # Extract the host part (e.g., "dpg-d5j0th2li9vc73alvn0g-a" or "dpg-d5j0th2li9vc73alvn0g")
+                host = match.group(1)
+                # Add .oregon-postgres.render.com
+                fixed_host = f"{host}.oregon-postgres.render.com"
+                database_url = database_url.replace(f"@{host}", f"@{fixed_host}")
+                logger.info(f"Fixed hostname from '{host}' to '{fixed_host}'")
         
-        logger.info(f"Connecting to database...")
+        logger.info(f"Final DATABASE_URL: {database_url.split('@')[0]}@*****")
         
-        # Create engine with simple settings
+        # Create engine
         engine = create_engine(
             database_url,
             pool_size=3,
@@ -98,10 +117,10 @@ def init_database(database_url):
             echo=False
         )
         
-        # Test connection with correct SQLAlchemy 2.0 syntax
+        # Test connection
         logger.info("Testing connection...")
         with engine.connect() as conn:
-            # SQLAlchemy 2.0 requires text() wrapper for raw SQL
+            # Use text() for SQLAlchemy 2.0
             from sqlalchemy import text
             result = conn.execute(text("SELECT 1"))
             logger.info(f"Connection test successful: {result.fetchone()}")
@@ -118,6 +137,8 @@ def init_database(database_url):
         logger.error(f"❌ Database initialization failed: {str(e)}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
+        # Log the exact database URL that failed
+        logger.error(f"Failed DATABASE_URL: {database_url}")
         return False
 
 def get_db():
