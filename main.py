@@ -1,4 +1,3 @@
-from argparse import Action
 import random
 import json
 import math
@@ -12,7 +11,6 @@ from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 import logging
-from logging.handlers import RotatingFileHandler
 import threading
 import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -46,7 +44,10 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL not found in environment variables")
 
 # Initialize database
-init_database(DATABASE_URL)
+if not init_database(DATABASE_URL):
+    logger.error("Failed to initialize database. Exiting...")
+    exit(1)
+    
 logger.info("Database initialized successfully")
 
 bot = TeleBot(API_KEY, parse_mode="HTML")
@@ -83,13 +84,16 @@ def get_user_info(chat_id):
                 'looking_for': user.looking_for,
                 'username': user.username
             }
-            db.close()
             return user_info
-        db.close()
         return None
     except Exception as e:
         logger.error(f"Error getting user info: {e}")
         return None
+    finally:
+        try:
+            db.close()
+        except:
+            pass
 
 def save_user_to_db(chat_id, user_data_dict):
     """Save user to database using SQLAlchemy"""
@@ -127,11 +131,15 @@ def save_user_to_db(chat_id, user_data_dict):
             db.add(user)
         
         db.commit()
-        db.close()
         return True
     except Exception as e:
         logger.error(f"Error saving user to DB: {e}")
         return False
+    finally:
+        try:
+            db.close()
+        except:
+            pass
 
 def update_user_field(chat_id, field, value):
     """Update specific user field"""
@@ -141,22 +149,31 @@ def update_user_field(chat_id, field, value):
         if user:
             setattr(user, field, value)
             db.commit()
-        db.close()
-        return True
+            return True
+        return False
     except Exception as e:
         logger.error(f"Error updating user field: {e}")
         return False
+    finally:
+        try:
+            db.close()
+        except:
+            pass
 
 def check_banned(chat_id):
     """Check if user is banned"""
     try:
         db: Session = next(get_db())
         banned = db.query(BannedUser).filter(BannedUser.user_id == chat_id).first()
-        db.close()
         return banned is not None
     except Exception as e:
         logger.error(f"Error checking banned: {e}")
         return False
+    finally:
+        try:
+            db.close()
+        except:
+            pass
 
 def save_like(liker_chat_id, liked_chat_id, note=None):
     """Save like to database"""
@@ -183,11 +200,15 @@ def save_like(liker_chat_id, liked_chat_id, note=None):
             db.add(like)
         
         db.commit()
-        db.close()
         return True
     except Exception as e:
         logger.error(f"Error saving like: {e}")
         return False
+    finally:
+        try:
+            db.close()
+        except:
+            pass
 
 def get_likes_for_user(chat_id, limit=5, offset=0):
     """Get likes for a user with pagination"""
@@ -213,11 +234,15 @@ def get_likes_for_user(chat_id, limit=5, offset=0):
                     'username': user.username
                 })
         
-        db.close()
         return result
     except Exception as e:
         logger.error(f"Error getting likes: {e}")
         return []
+    finally:
+        try:
+            db.close()
+        except:
+            pass
 
 def save_report(reporter_id, reported_id, violation_type):
     """Save report to database"""
@@ -232,11 +257,15 @@ def save_report(reporter_id, reported_id, violation_type):
         )
         db.add(report)
         db.commit()
-        db.close()
         return True
     except Exception as e:
         logger.error(f"Error saving report: {e}")
         return False
+    finally:
+        try:
+            db.close()
+        except:
+            pass
 
 def calculate_distance(location1, location2):
     try:
@@ -279,11 +308,15 @@ def get_matched_profiles(user_info, gender_preference):
                 matched_profiles.append((partner_info, distance, similarity))
         
         matched_profiles.sort(key=lambda x: (x[1], -x[2]))
-        db.close()
         return matched_profiles
     except Exception as e:
         logger.error(f"Error in get_matched_profiles: {e}")
         return []
+    finally:
+        try:
+            db.close()
+        except:
+            pass
 
 def send_tips():
     while True:
@@ -599,11 +632,12 @@ def handle_like_action(liker_chat_id, liked_chat_id, user_info, liked_user_info)
             Like.liker_chat_id == liked_chat_id,
             Like.liked_chat_id == liker_chat_id
         ).first()
-        db.close()
-
+        
         if mutual_like:
             bot.send_message(liker_chat_id, f"You and {liked_user_info['name']} liked each other! Start chatting.")
             bot.send_message(liked_chat_id, f"You and {user_info['name']} liked each other! Start chatting.")
+        
+        db.close()
 
         # Show the next profile
         display_next_profile(liker_chat_id)
@@ -852,528 +886,3 @@ def handle_like(liker_chat_id, liked_chat_id):
         liked_user_info = get_user_info(liked_chat_id)
 
         if not user_info:
-            bot.send_message(liker_chat_id, "Your profile information could not be retrieved.")
-            return
-
-        if liked_user_info:
-            # Notify the liked user with the updated button
-            markup = InlineKeyboardMarkup()
-            btn_see_who = InlineKeyboardButton("👀 See Who Liked You", callback_data="view_likes")
-            btn_dislike = InlineKeyboardButton("❌ Dislike", callback_data=f"dislike_{liker_chat_id}")
-            markup.add(btn_see_who, btn_dislike)
-
-            bot.send_message(
-                liked_chat_id,
-                "Someone liked your profile! Use the buttons below:",
-                reply_markup=markup
-            )
-
-        # Save like in the database
-        save_like(liker_chat_id, liked_chat_id)
-
-        # Show the next profile to the liker
-        display_next_profile(liker_chat_id)
-
-    except Exception as e:
-        logger.error(f"Error in handle_like: {e}")
-        bot.send_message(liker_chat_id, "An unexpected error occurred. Please try again later.")
-        display_next_profile(liker_chat_id)
-
-def handle_note_input(message):
-    chat_id = message.chat.id
-    note_text = message.text.strip()
-    
-    # Get the liked chat ID from user_data
-    liked_chat_id = user_data.get(chat_id, {}).get('current_liked_chat_id')
-    if not liked_chat_id:
-        bot.send_message(chat_id, "❌ No profile selected to send a note.")
-        return
-    
-    # Save note with like
-    save_like(chat_id, liked_chat_id, note_text)
-    
-    # Notify the recipient
-    user_info = get_user_info(chat_id)
-    if user_info:
-        note_message = f"📩 Someone sent you a note:\n\n{note_text}\n\nFrom: {user_info['name']}"
-        bot.send_message(liked_chat_id, note_message)
-    
-    bot.send_message(chat_id, "✅ Your note has been sent!")
-    display_next_profile(chat_id)
-
-def display_next_profile(chat_id):
-    try:
-        # Ensure user data exists
-        if chat_id not in user_data or 'matched_profiles' not in user_data[chat_id]:
-            return
-
-        matched_profiles = user_data[chat_id]['matched_profiles']
-        current_index = user_data[chat_id].get('current_profile_index', -1)
-
-        # Ensure there are more profiles to display
-        if current_index + 1 < len(matched_profiles):
-            # Move to the next profile
-            current_index += 1
-            user_data[chat_id]['current_profile_index'] = current_index
-
-            # Extract profile correctly
-            profile_tuple = matched_profiles[current_index]
-            if isinstance(profile_tuple, tuple) and len(profile_tuple) > 0 and isinstance(profile_tuple[0], dict):
-                profile_data = profile_tuple[0]
-            else:
-                return
-
-            # Display the profile
-            display_profile(chat_id, profile_data)
-        else:
-            bot.send_message(chat_id, "No more profiles to display.")
-
-    except Exception as e:
-        logger.error(f"Error in display_next_profile: {e}")
-
-@bot.message_handler(commands=['view_likes'])
-def handle_view_likes(message):
-    """Fetch and display profiles of users who liked the current user, with pagination."""
-    try:
-        chat_id = message.chat.id if hasattr(message, 'chat') else message.message.chat.id
-        offset = 0
-        limit = 5
-
-        # Call the helper function to show likes
-        display_likes(chat_id, offset, limit)
-    except Exception as e:
-        logger.error(f"Error in /view_likes: {e}")
-        bot.send_message(chat_id, "An error occurred while fetching your likes. Please try again later.")
-
-def display_likes(chat_id, offset, limit):
-    """Helper function to display likes with pagination, including notes if available."""
-    try:
-        # Fetch likes from database
-        likes = get_likes_for_user(chat_id, limit, offset)
-
-        if not likes:
-            bot.send_message(chat_id, "No one has liked your profile yet.")
-            return
-
-        # Display each liker's profile
-        for like in likes:
-            profile_details = f"{like['name']}, {like['age']}, {like['location']}, {like['interests']}\nUsername: @{like['username'] if like['username'] else 'No username'}"
-
-            # Include note if available
-            if like['note']:
-                profile_details += f"\n\n📝 Note: {like['note']}"
-
-            try:
-                bot.send_photo(
-                    chat_id,
-                    like['photo'],
-                    caption=profile_details,
-                    reply_markup=generate_like_dislike_buttons(like['liker_chat_id'], chat_id)
-                )
-            except Exception as photo_error:
-                logger.error(f"Error sending photo: {photo_error}")
-                bot.send_message(chat_id, f"{profile_details}\n\n(⚠️ Unable to load photo)")
-
-        # Check if there are more likes
-        db: Session = next(get_db())
-        total_likes = db.query(Like).filter(Like.liked_chat_id == chat_id).count()
-        db.close()
-
-        # Create navigation buttons if there are more likes
-        markup = InlineKeyboardMarkup()
-
-        if offset + limit < total_likes:
-            # Add "Previous" button to fetch older likes
-            markup.add(InlineKeyboardButton("Previous", callback_data=f"view_likes_previous:{offset + limit}"))
-
-        if offset > 0:
-            # Add "Next" button to fetch newer likes
-            prev_offset = max(offset - limit, 0)
-            markup.add(InlineKeyboardButton("Next", callback_data=f"view_likes_previous:{prev_offset}"))
-
-        if markup.keyboard:
-            bot.send_message(chat_id, "Use the buttons below to navigate likes:", reply_markup=markup)
-    except Exception as e:
-        logger.error(f"Error in display_likes: {e}")
-        bot.send_message(chat_id, "An error occurred while fetching likes. Please try again later.")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("view_likes_previous"))
-def handle_view_likes_callback(call):
-    """Handle 'Previous' button to paginate through likes."""
-    try:
-        chat_id = call.message.chat.id
-        data = call.data.split(":")
-        offset = int(data[1])
-        limit = 5
-
-        # Call the helper function to display likes with updated offset
-        display_likes(chat_id, offset, limit)
-    except Exception as e:
-        logger.error(f"Error in handle_view_likes_callback: {e}")
-        bot.send_message(chat_id, "An error occurred while fetching likes. Please try again later.")
-
-def generate_like_dislike_buttons(liker_id, liked_id):
-    """Generate inline buttons for Like and Dislike actions."""
-    user_likes[liked_id] = liker_id
-
-    markup = InlineKeyboardMarkup()
-    like_button = InlineKeyboardButton("👍 Like", callback_data=f"like_{liker_id}")
-    dislike_button = InlineKeyboardButton("👎 Dislike", callback_data=f"dislike_{liker_id}")
-    report_button = InlineKeyboardButton("🚩 Report", callback_data=f"report_{liked_id}")
-    markup.row(like_button, dislike_button)
-    markup.add(report_button)
-    return markup
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("like_") or call.data.startswith("dislike_"))
-def handle_like_dislike(call):
-    try:
-        liker_id = call.from_user.id
-        liked_disliked_id = int(call.data.split("_")[1])
-        action = call.data.split("_")[0]
-
-        if action == "like":
-            bot.answer_callback_query(call.id, "You liked the person!")
-            bot.send_message(liked_disliked_id, "Someone liked you!")
-        elif action == "dislike":
-            bot.answer_callback_query(call.id, "You disliked the person!")
-
-        # Match with the next profile
-        bot.send_message(liker_id, "Finding your next match...")
-        find_random_chat(types.Message(chat=types.Chat(id=liker_id), text="M, F, or Both"))
-    except Exception as e:
-        logger.error(f"Error in handle_like_dislike: {e}")
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    try:
-        help_text = (
-            "Welcome to our bot! Here's how to use it:\n\n"
-            "1️⃣ *Create a Community*: Use /community to create your own community or to join communities you like.\n\n"
-            "2️⃣ *View and Match Profiles*: Use /view_profiles to browse through profiles. You can like, dislike, or report profiles.\n\n"
-            "3️⃣ *Random Chats*: Use /random to chat with random users within the bot.\n\n"
-            "4️⃣ *Submit a Complaint*: To report issues or provide feedback, please send your concerns directly to @meh9061.\n\n"
-            "5️⃣ *Contact Us*: For any inquiries, you can reach us at:\n"
-            "   - 📧 Email: natnaeltakele36@gmail.com\n"
-            "   - 📞 Phone: +251935519061\n\n"
-            "We're here to help you! 😊"
-        )
-
-        bot.send_message(message.chat.id, help_text)
-    except Exception as e:
-        logger.error(f"Error in help_command: {e}")
-        bot.send_message(message.chat.id, "Something went wrong. Please try again.")
-
-@bot.message_handler(commands=['community'])
-def community_options(message):
-    chat_id = message.chat.id
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add(types.KeyboardButton("Create Community"), types.KeyboardButton("List Communities"))
-    msg = bot.send_message(chat_id, "Choose an option:", reply_markup=markup)
-    bot.register_next_step_handler(msg, handle_community_choice)
-
-def handle_community_choice(message):
-    chat_id = message.chat.id
-    choice = message.text
-
-    if choice == "Create Community":
-        send_creation_instructions(message)
-    elif choice == "List Communities":
-        list_communities(message)
-    else:
-        bot.send_message(chat_id, "Invalid choice. Please try again.")
-
-def send_creation_instructions(message):
-    chat_id = message.chat.id
-    instructions = (
-        "To add your group to the bot, please provide the following information:\n"
-        "1. Group Name\n"
-        "2. Group Description\n"
-        "3. Group Profile Picture\n"
-        "4. Group Invite Link\n"
-        "Please send the group name first:"
-    )
-    msg = bot.send_message(chat_id, instructions)
-    bot.register_next_step_handler(msg, ask_group_name)
-
-def ask_group_name(message):
-    chat_id = message.chat.id
-    user_data[chat_id] = {'group_name': message.text}
-    msg = bot.send_message(chat_id, "Please enter the group's description:")
-    bot.register_next_step_handler(msg, ask_group_description)
-
-def ask_group_description(message):
-    chat_id = message.chat.id
-    user_data[chat_id]['group_description'] = message.text
-    msg = bot.send_message(chat_id, "Please send the group's profile picture:")
-
-@bot.message_handler(content_types=['photo'])
-def handle_group_photo(message):
-    chat_id = message.chat.id
-    if chat_id in user_data and 'group_description' in user_data[chat_id]:
-        file_info = bot.get_file(message.photo[-1].file_id)
-        user_data[chat_id]['group_photo'] = file_info.file_id
-        msg = bot.send_message(chat_id, "Please enter the group's invite link:")
-        bot.register_next_step_handler(msg, register_group)
-    else:
-        bot.send_message(chat_id, "Please start the community creation process with /community.")
-
-def register_group(message):
-    chat_id = message.chat.id
-    invite_link = message.text
-    group_name = user_data[chat_id]['group_name']
-    group_description = user_data[chat_id]['group_description']
-    group_photo = user_data[chat_id]['group_photo']
-
-    try:
-        db: Session = next(get_db())
-        group = Group(
-            name=group_name,
-            description=group_description,
-            photo=group_photo,
-            invite_link=invite_link,
-            created_at=datetime.utcnow(),
-            created_by=chat_id
-        )
-        db.add(group)
-        db.commit()
-        db.close()
-        bot.send_message(chat_id, "Your group has been registered successfully!")
-    except Exception as err:
-        logger.error(f"Error registering group: {err}")
-        bot.send_message(chat_id, f"Error: {err}")
-
-def list_communities(message):
-    chat_id = message.chat.id
-    try:
-        db: Session = next(get_db())
-        groups = db.query(Group).all()
-        db.close()
-
-        if groups:
-            for group in groups:
-                markup = types.InlineKeyboardMarkup()
-                button = types.InlineKeyboardButton("Check out the group", url=group.invite_link)
-                markup.add(button)
-                caption = f"Name: {group.name}\nDescription: {group.description}"
-                
-                try:
-                    bot.send_photo(chat_id, group.photo, caption=caption, reply_markup=markup)
-                except:
-                    bot.send_message(chat_id, f"{caption}\n\n{group.invite_link}", reply_markup=markup)
-        else:
-            bot.send_message(chat_id, "No communities found.")
-    except Exception as e:
-        logger.error(f"Error listing communities: {e}")
-        bot.send_message(chat_id, "Error loading communities.")
-
-@bot.message_handler(commands=['random'])
-def ask_match_preference(message):
-    chat_id = message.chat.id
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add(types.KeyboardButton("M"), types.KeyboardButton("F"), types.KeyboardButton("Both"))
-    msg = bot.reply_to(message, "Who would you like to be matched with? (M, F, or Both):", reply_markup=markup)
-    bot.register_next_step_handler(msg, find_random_chat)
-
-def find_random_chat(message):
-    chat_id = message.chat.id
-    gender_preference = message.text.upper()
-
-    if chat_id not in user_data:
-        user_data[chat_id] = {}
-
-    if chat_id in pending_users:
-        bot.reply_to(message, "You are already in the queue. Please wait for a match.")
-        return
-
-    user_info = get_user_info(chat_id)
-    if not user_info:
-        bot.reply_to(message, "Please set up your profile using /start.")
-        return
-
-    matched_profiles = get_matched_profiles(user_info, gender_preference)
-    
-    if matched_profiles:
-        partner_info = matched_profiles[0][0]
-        partner_chat_id = partner_info['chat_id']
-
-        if partner_chat_id in pending_users:
-            pending_users.remove(partner_chat_id)
-            
-            if partner_chat_id not in user_data:
-                user_data[partner_chat_id] = {}
-
-            user_data[chat_id]['partner'] = partner_chat_id
-            user_data[partner_chat_id]['partner'] = chat_id
-
-            show_profiles(chat_id, partner_chat_id)
-
-            bot.send_message(chat_id, "You have been matched! Say hi to your new friend.")
-            bot.send_message(partner_chat_id, "You have been matched! Say hi to your new friend.")
-
-            end_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-            end_markup.add("End")
-            bot.send_message(chat_id, "Type 'End' to end the chat.", reply_markup=end_markup)
-            bot.send_message(partner_chat_id, "Type 'End' to end the chat.", reply_markup=end_markup)
-
-        else:
-            pending_users.append(chat_id)
-            bot.reply_to(message, "Waiting for a match...")
-    else:
-        pending_users.append(chat_id)
-        bot.reply_to(message, "Waiting for a match...")
-
-def show_profiles(chat_id, partner_chat_id):
-    user_info = get_user_info(chat_id)
-    partner_info = get_user_info(partner_chat_id)
-    
-    if user_info and partner_info:
-        user_profile_summary = (
-            f"Name: {user_info['name']}\n"
-            f"Age: {user_info['age']}\n"
-            f"Gender: {user_info['gender']}\n"
-            f"Location: {user_info['location']}\n"
-            f"Looking for: {'Dating' if user_info['looking_for'] == '1' else 'Friends'}\n"
-            f"Interests: {', '.join(user_info['interests'].split(', '))}"
-        )
-        partner_profile_summary = (
-            f"Name: {partner_info['name']}\n"
-            f"Age: {partner_info['age']}\n"
-            f"Gender: {partner_info['gender']}\n"
-            f"Location: {partner_info['location']}\n"
-            f"Looking for: {'Dating' if partner_info['looking_for'] == '1' else 'Friends'}\n"
-            f"Interests: {', '.join(partner_info['interests'].split(', '))}"
-        )
-
-        bot.send_photo(chat_id, partner_info['photo'], caption=f"Your match's profile:\n\n{partner_profile_summary}")
-        bot.send_photo(partner_chat_id, user_info['photo'], caption=f"Your match's profile:\n\n{user_profile_summary}")
-
-@bot.message_handler(func=lambda message: True)
-def relay_message(message):
-    chat_id = message.chat.id
-    if chat_id in user_data and 'partner' in user_data[chat_id]:
-        partner_chat_id = user_data[chat_id]['partner']
-        if message.text.lower() == 'end':
-            end_chat(chat_id)
-        else:
-            bot.send_message(partner_chat_id, message.text)
-
-def end_chat(chat_id):
-    try:
-        if chat_id in user_data and 'partner' in user_data[chat_id]:
-            partner_chat_id = user_data[chat_id]['partner']
-
-            markup = generate_like_dislike_buttons(chat_id, partner_chat_id)
-            partner_markup = generate_like_dislike_buttons(partner_chat_id, chat_id)
-
-            bot.send_message(partner_chat_id, "Do you like the person you just talked with?", reply_markup=markup)
-            bot.send_message(chat_id, "Do you like the person you just talked with?", reply_markup=partner_markup)
-
-            user_data[chat_id].pop('partner', None)
-            if partner_chat_id in user_data:
-                user_data[partner_chat_id].pop('partner', None)
-
-        else:
-            bot.send_message(chat_id, "❌ You are not in a chat currently.")
-
-    except Exception as e:
-        logger.error(f"Error in end_chat: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("report_"))
-def handle_report(call):
-    try:
-        reporter_id = call.from_user.id
-        reported_id = user_likes.get(reporter_id)
-
-        if not reported_id:
-            bot.answer_callback_query(call.id, "⚠️ Error: Could not determine reported user.")
-            return
-
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("Spam", callback_data=f"violation_spam_{reported_id}"))
-        markup.add(InlineKeyboardButton("Harassment", callback_data=f"violation_harassment_{reported_id}"))
-        markup.add(InlineKeyboardButton("Other", callback_data=f"violation_other_{reported_id}"))
-
-        bot.send_message(reporter_id, "⚠️ Please select a reason for reporting:", reply_markup=markup)
-
-    except Exception as e:
-        logger.error(f"Error in handle_report: {e}")
-        bot.answer_callback_query(call.id, "❌ An error occurred. Please try again.")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("violation_"))
-def handle_violation(call):
-    try:
-        data_parts = call.data.split('_')
-        violation_type = data_parts[1]
-        reported_id = int(data_parts[2])
-        reporter_id = call.from_user.id
-
-        if reporter_id == reported_id:
-            bot.answer_callback_query(call.id, "❌ You cannot report yourself.")
-            return
-
-        save_report(reporter_id, reported_id, violation_type)
-        bot.answer_callback_query(call.id, "✅ Thank you! Your report has been submitted.")
-        check_reports(reported_id, reporter_id)
-
-    except Exception as e:
-        logger.error(f"Error in handle_violation: {e}")
-        bot.answer_callback_query(call.id, "❌ An error occurred. Please try again.")
-
-def check_reports(reported_chat_id, reporter_chat_id):
-    try:
-        db: Session = next(get_db())
-        reports = db.query(Report).filter(Report.reported_chat_id == reported_chat_id).all()
-        db.close()
-
-        report_count = len(reports)
-        
-        if report_count >= 3:
-            bot.send_message(
-                reported_chat_id,
-                f"Warning: You have received {report_count} reports. Please adhere to the guidelines.",
-            )
-        
-        if report_count >= 5:
-            bot.send_message(
-                reported_chat_id,
-                f"You have been banned for receiving 5 reports.",
-            )
-
-            try:
-                db: Session = next(get_db())
-                banned = BannedUser(user_id=reported_chat_id)
-                db.add(banned)
-                db.commit()
-                db.close()
-            except:
-                pass
-
-        bot.send_message(reporter_chat_id, "Finding your next match...")
-        find_random_chat(types.Message(chat=types.Chat(id=reporter_chat_id), text="M, F, or Both"))
-
-    except Exception as e:
-        logger.error(f"Error processing check_reports: {e}")
-
-# Start the bot with proper error handling
-if __name__ == '__main__':
-    logger.info("Bot starting...")
-    
-    # Remove any existing webhook first (important!)
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except:
-        pass
-    
-    # Start tip thread
-    start_tip_thread()
-    
-    # Start polling with skip_pending to avoid 409 error
-    while True:
-        try:
-            logger.info("Starting bot polling...")
-            bot.polling(none_stop=True, interval=0, timeout=20, skip_pending=True)
-        except Exception as e:
-            logger.error(f"Bot polling error: {e}")
-            logger.info("Restarting in 5 seconds...")
-            time.sleep(5)
