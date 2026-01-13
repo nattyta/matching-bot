@@ -73,7 +73,7 @@ def get_user_info(chat_id):
         user = db.query(User).filter(User.chat_id == chat_id).first()
         
         if user:
-            user_info = {
+            return {
                 'chat_id': user.chat_id,
                 'name': user.name,
                 'age': user.age,
@@ -84,16 +84,14 @@ def get_user_info(chat_id):
                 'looking_for': user.looking_for,
                 'username': user.username
             }
-            return user_info
-        return None
     except Exception as e:
         logger.error(f"Error getting user info: {e}")
-        return None
     finally:
         try:
             db.close()
         except:
             pass
+    return None
 
 def save_user_to_db(chat_id, user_data_dict):
     """Save user to database using SQLAlchemy"""
