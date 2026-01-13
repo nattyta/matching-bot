@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, inspect
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -15,11 +15,11 @@ class User(Base):
     username = Column(String(100))
     name = Column(String(100))
     age = Column(Integer)
-    gender = Column(String(1))  # 'M' or 'F'
-    location = Column(String(200))  # Note: single location field for old code
+    gender = Column(String(1))
+    location = Column(String(200))
     photo = Column(String(500))
     interests = Column(Text)
-    looking_for = Column(String(10))  # '1' for Dating, '2' for Friends
+    looking_for = Column(String(10))
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Like(Base):
@@ -28,8 +28,8 @@ class Like(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     liker_chat_id = Column(Integer)
     liked_chat_id = Column(Integer)
+    note = Column(Text, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    note = Column(Text, nullable=True)  # Added note field for old code
 
 class BannedUser(Base):
     __tablename__ = 'banned_users'
@@ -43,7 +43,6 @@ class Report(Base):
     reporter_chat_id = Column(Integer)
     reported_chat_id = Column(Integer)
     violation = Column(String(50))
-    description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Group(Base):
@@ -62,76 +61,69 @@ engine = None
 SessionLocal = None
 
 def init_database(database_url):
-    """Initialize database with SSL settings for Render"""
+    """Initialize database"""
     global engine, SessionLocal
     
     try:
-        logger.info("🔧 Creating database engine...")
+        logger.info("🔧 Initializing database...")
         
-        # Check if URL needs .render.com suffix
-        if "dpg-" in database_url and "render.com" not in database_url:
-            # Try to fix the hostname
-            parts = database_url.split('@')
-            if len(parts) == 2:
-                host_part = parts[1].split('/')[0]
-                if '.' not in host_part:  # Hostname doesn't have domain
-                    # Add the .render.com domain
-                    fixed_host = f"{host_part}.oregon-postgres.render.com"
-                    database_url = database_url.replace(host_part, fixed_host)
-                    logger.info(f"Fixed hostname to: {fixed_host}")
-        
-        # Add SSL mode if not present
-        if database_url.startswith("postgresql://"):
-            if "sslmode" not in database_url.lower():
+        # Fix common Render PostgreSQL issues
+        if database_url and "postgresql://" in database_url:
+            # Ensure SSL mode is set
+            if "sslmode" not in database_url:
                 if "?" in database_url:
                     database_url += "&sslmode=require"
                 else:
                     database_url += "?sslmode=require"
+            
+            # Fix missing .render.com domain
+            if "@dpg-" in database_url and ".render.com" not in database_url:
+                # Find the host part and add domain
+                import re
+                match = re.search(r'@(dpg-[a-z0-9]+)', database_url)
+                if match:
+                    host = match.group(1)
+                    database_url = database_url.replace(f"@{host}", f"@{host}.oregon-postgres.render.com")
+                    logger.info(f"Fixed database hostname")
         
-        logger.info(f"Connecting with URL: {database_url.split('@')[0]}@*****")
+        logger.info(f"Connecting to database...")
         
-        # Create engine
+        # Create engine with simple settings
         engine = create_engine(
             database_url,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=3,
+            max_overflow=5,
             pool_pre_ping=True,
             pool_recycle=300,
-            pool_timeout=30,
-            echo=False,
-            connect_args={
-                'connect_timeout': 10,
-                'keepalives': 1,
-                'keepalives_idle': 30,
-                'keepalives_interval': 10,
-                'keepalives_count': 5,
-            }
+            echo=False
         )
         
-        # Test connection
-        logger.info("🔄 Testing database connection...")
+        # Test connection with correct SQLAlchemy 2.0 syntax
+        logger.info("Testing connection...")
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
-        logger.info("✅ Database connection test successful")
+            # SQLAlchemy 2.0 requires text() wrapper for raw SQL
+            from sqlalchemy import text
+            result = conn.execute(text("SELECT 1"))
+            logger.info(f"Connection test successful: {result.fetchone()}")
         
         # Create tables
-        logger.info("🔄 Creating tables...")
+        logger.info("Creating tables...")
         Base.metadata.create_all(bind=engine)
-        logger.info("✅ Tables created successfully")
         
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("✅ Database initialized successfully")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Database initialization failed: {e}")
-        logger.error(f"Database URL used: {database_url if 'postgresql' in str(database_url) else 'URL masked for security'}")
+        logger.error(f"❌ Database initialization failed: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False
 
 def get_db():
     """Get database session"""
     if SessionLocal is None:
-        raise RuntimeError("Database not initialized")
+        raise RuntimeError("Database not initialized. Call init_database first.")
     
     db = SessionLocal()
     try:
