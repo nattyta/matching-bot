@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, BigInteger, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, scoped_session
 from datetime import datetime
 import logging
 import re
@@ -135,12 +135,6 @@ def init_database(database_url):
             
             for table, column in columns_to_check:
                 try:
-                    conn.execute(text(f"""
-                        SELECT column_name, data_type 
-                        FROM information_schema.columns 
-                        WHERE table_name = '{table}' AND column_name = '{column}'
-                    """))
-                    
                     # Try to alter to BIGINT if it's INTEGER
                     conn.execute(text(f"""
                         ALTER TABLE {table} 
@@ -152,6 +146,7 @@ def init_database(database_url):
             
             conn.commit()
         
+        # Create session factory
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("✅ Database initialized successfully")
         return True
@@ -163,16 +158,19 @@ def init_database(database_url):
         return False
 
 def get_db():
-    """Get database session with proper context management"""
+    """Get database session"""
     if SessionLocal is None:
         raise RuntimeError("Database not initialized. Call init_database first.")
     
     db = SessionLocal()
     try:
-        yield db
-        db.commit()
+        return db
     except Exception as e:
         db.rollback()
         raise e
-    finally:
+    # Note: We don't close here, it will be closed by the caller
+
+def close_db(db):
+    """Close database session"""
+    if db:
         db.close()
